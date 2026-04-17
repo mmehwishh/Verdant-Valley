@@ -54,9 +54,7 @@ from utils.helpers import grid_to_px, draw_rounded_rect
 # ── Asset loading ──────────────────────────────────────────────────────────────
 
 REPO_ROOT = os.path.dirname(
-    os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    )
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 STONE_ASSET_PATHS = [
     os.path.join(REPO_ROOT, "assets", "images", "final_stone.jpg"),
@@ -599,7 +597,6 @@ class Grid:
                 pygame.draw.circle(surface, (100, 52, 18), (x + dx, y + dy), 1)
 
         elif t.type == TILE_STONE:
-<<<<<<< Updated upstream
             stone_asset = _get_stone_asset()
             if stone_asset:
                 surface.blit(stone_asset, (x, y))
@@ -611,48 +608,60 @@ class Grid:
                     h_off = pebble["highlight_offset"]
                     s_off = pebble["shadow_offset"]
                     c_var = pebble["color_var"]
-                    
+
                     # Base stone color with variation
                     base = TILE_COLOR[TILE_STONE]
                     stone_color = (
                         max(40, min(200, base[0] + c_var)),
                         max(40, min(200, base[1] + c_var)),
-                        max(40, min(200, base[2] + c_var))
+                        max(40, min(200, base[2] + c_var)),
                     )
-                    
+
                     # Deep shadow (darkest inner ring)
                     shadow_color = (
                         max(40, stone_color[0] - 30),
                         max(40, stone_color[1] - 30),
-                        max(40, stone_color[2] - 30)
+                        max(40, stone_color[2] - 30),
                     )
-                    pygame.draw.circle(surface, shadow_color, (x + sx + s_off[0], y + sy + s_off[1]), sr + 1)
-                    
+                    pygame.draw.circle(
+                        surface,
+                        shadow_color,
+                        (x + sx + s_off[0], y + sy + s_off[1]),
+                        sr + 1,
+                    )
+
                     # Main stone body
                     pygame.draw.circle(surface, stone_color, (x + sx, y + sy), sr)
-                    
+
                     # Subtle mid-tone ring for depth
                     mid_color = (
                         (stone_color[0] + shadow_color[0]) // 2,
                         (stone_color[1] + shadow_color[1]) // 2,
-                        (stone_color[2] + shadow_color[2]) // 2
+                        (stone_color[2] + shadow_color[2]) // 2,
                     )
                     pygame.draw.circle(surface, mid_color, (x + sx, y + sy), sr, 1)
-                    
+
                     # Top highlight (bright edge)
                     highlight_color = (
                         min(255, stone_color[0] + 40),
                         min(255, stone_color[1] + 40),
-                        min(255, stone_color[2] + 40)
+                        min(255, stone_color[2] + 40),
                     )
                     h_size = max(1, sr // 3)
-                    pygame.draw.circle(surface, highlight_color, 
-                                     (x + sx + h_off[0], y + sy + h_off[1]), h_size)
-                    
+                    pygame.draw.circle(
+                        surface,
+                        highlight_color,
+                        (x + sx + h_off[0], y + sy + h_off[1]),
+                        h_size,
+                    )
+
                     # Micro-shine dot on highlight
-                    pygame.draw.circle(surface, (255, 255, 255),
-                                     (x + sx + h_off[0], y + sy + h_off[1]), max(1, h_size - 1))
-=======
+                    pygame.draw.circle(
+                        surface,
+                        (255, 255, 255),
+                        (x + sx + h_off[0], y + sy + h_off[1]),
+                        max(1, h_size - 1),
+                    )
             for pebble in tx.get("pebbles", []):
                 sx = pebble["x"]
                 sy = pebble["y"]
@@ -714,7 +723,6 @@ class Grid:
                     (x + sx + h_off[0], y + sy + h_off[1]),
                     max(1, h_size - 1),
                 )
->>>>>>> Stashed changes
 
         elif t.type == TILE_MUD:
             for streak_x in tx.get("streaks", []):
@@ -882,11 +890,9 @@ class Grid:
             tint = pygame.Surface((grid_w, grid_h), pygame.SRCALPHA)
             tint.fill(tint_color)
             self._tint_surf_cache[season_index] = tint
-<<<<<<< Updated upstream
-        surface.blit(self._tint_surf_cache[season_index],
-                     (GRID_OFFSET_X, GRID_OFFSET_Y))
-=======
         surface.blit(
             self._tint_surf_cache[season_index], (GRID_OFFSET_X, GRID_OFFSET_Y)
         )
->>>>>>> Stashed changes
+        surface.blit(
+            self._tint_surf_cache[season_index], (GRID_OFFSET_X, GRID_OFFSET_Y)
+        )
