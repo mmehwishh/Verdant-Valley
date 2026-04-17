@@ -9,6 +9,11 @@ import random
 import cv2
 import numpy as np
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -689,11 +694,12 @@ class Game:
         self.screen.blit(resume_text, resume_rect)
 
     def draw_plant_button(self):
-        """Draw the plant crops button at bottom center"""
-        btn_width = 150
+        """Draw the plant crops button in the right sidebar"""
+        btn_width = 140
         btn_height = 45
-        btn_x = SCREEN_W // 2 - btn_width // 2
-        btn_y = SCREEN_H - 55
+        # Position inside the right-side panel, higher to avoid farm boundary collision
+        btn_x = SCREEN_W - SIDEBAR_W + 20
+        btn_y = 320
         self.plant_button_rect = pygame.Rect(btn_x, btn_y, btn_width, btn_height)
 
         wood_base = (100, 70, 40)
@@ -720,7 +726,7 @@ class Game:
                 1,
             )
 
-        btn_font = pygame.font.Font(None, 22)
+        btn_font = pygame.font.Font(None, 20)
         btn_text = btn_font.render("🌱 PLANT CROPS", True, (255, 215, 0))
         text_rect = btn_text.get_rect(center=self.plant_button_rect.center)
         self.screen.blit(btn_text, text_rect)
@@ -846,6 +852,10 @@ class Game:
                     if hasattr(agent, "alive") and not agent.alive:
                         continue
                     agent.draw(self.screen)
+                
+                # Draw failed plant indicator for farmer
+                if self.farmer:
+                    self.farmer.draw_failed_plant_indicator(self.screen)
 
             elif self.state == "PAUSED":
                 self.screen.fill((34, 139, 34))
@@ -856,10 +866,10 @@ class Game:
                 self.draw_minimap()
 
                 # Draw plant button (disabled during pause)
-                btn_width = 150
+                btn_width = 140
                 btn_height = 45
-                btn_x = SCREEN_W // 2 - btn_width // 2
-                btn_y = SCREEN_H - 55
+                btn_x = SCREEN_W - SIDEBAR_W + 20
+                btn_y = 320
                 pause_btn_rect = pygame.Rect(btn_x, btn_y, btn_width, btn_height)
                 pygame.draw.rect(
                     self.screen, (80, 80, 80), pause_btn_rect, border_radius=12
@@ -867,7 +877,7 @@ class Game:
                 pygame.draw.rect(
                     self.screen, (100, 100, 100), pause_btn_rect, 2, border_radius=12
                 )
-                btn_font = pygame.font.Font(None, 22)
+                btn_font = pygame.font.Font(None, 20)
                 btn_text = btn_font.render("🌱 PLANT CROPS", True, (150, 150, 150))
                 text_rect = btn_text.get_rect(center=pause_btn_rect.center)
                 self.screen.blit(btn_text, text_rect)
@@ -876,6 +886,11 @@ class Game:
                     if hasattr(agent, "alive") and not agent.alive:
                         continue
                     agent.draw(self.screen)
+                
+                # Draw failed plant indicator for farmer
+                if self.farmer:
+                    self.farmer.draw_failed_plant_indicator(self.screen)
+                
                 self.draw_pause_screen()
 
             elif self.state == "END":

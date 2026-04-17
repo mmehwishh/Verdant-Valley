@@ -449,7 +449,7 @@ def draw_sidebar(surface, grid, season_mgr, agents, selected_agent=None):
     draw_text(surface, "CROPS", f, C_TEXT_GOLD, sx + 12, y)
     y += 26
 
-    counts = {CROP_WHEAT: 0, CROP_SUNFLOWER: 0, CROP_CORN: 0}
+    counts = {CROP_WHEAT: 0, CROP_SUNFLOWER: 0, CROP_CORN: 0, CROP_TOMATO: 0, CROP_CARROT: 0, CROP_POTATO: 0}
     for c in range(grid.cols):
         for r in range(grid.rows):
             t = grid.tiles[c][r]

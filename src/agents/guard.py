@@ -61,9 +61,10 @@ class Guard(Agent):
         )
 
     def _plan_to(self, grid, goal):
-        result = astar(grid, (self.col, self.row), goal)
+        result = astar(grid, (self.col, self.row), goal, GUARD_COSTS)
         if result.path:
             self.set_path(result.path, result.explored)
+            self.moving = True
 
     def update(self, grid, agents):
         super().update(grid, agents)
@@ -94,7 +95,14 @@ class Guard(Agent):
         if not self.waypoints:
             return
 
-        if not self.moving or self.path_idx >= len(self.path):
-            goal = self.waypoints[self.wp_index % len(self.waypoints)]
-            self._plan_to(grid, goal)
+        current_goal = self.waypoints[self.wp_index % len(self.waypoints)]
+        at_goal = (self.col, self.row) == current_goal
+
+        if at_goal:
             self.wp_index += 1
+            current_goal = self.waypoints[self.wp_index % len(self.waypoints)]
+            self._plan_to(grid, current_goal)
+            self.replan_cd = 30
+        elif self.replan_cd == 0:
+            self._plan_to(grid, current_goal)
+            self.replan_cd = 30

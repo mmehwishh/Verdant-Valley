@@ -55,6 +55,34 @@ TILE_COST = {
     TILE_FIELD: 1.0,
 }
 
+# Agent Movement Costs
+FARMER_COSTS = {
+    TILE_GRASS: 1.0,
+    TILE_DIRT: 1.0,
+    TILE_FIELD: 1.0,
+    TILE_MUD: 3.0,
+    TILE_WATER: float('inf'),
+    TILE_STONE: float('inf'),
+}
+
+GUARD_COSTS = {
+    TILE_GRASS: 1.0,
+    TILE_DIRT: 1.0,
+    TILE_FIELD: 1.0,
+    TILE_MUD: 3.0,
+    TILE_WATER: float('inf'),
+    TILE_STONE: float('inf'),
+}
+
+ANIMAL_COSTS = {
+    TILE_GRASS: 1.0,
+    TILE_DIRT: 1.0,
+    TILE_FIELD: 1.0,
+    TILE_MUD: 2.0,
+    TILE_WATER: float('inf'),
+    TILE_STONE: float('inf'),
+}
+
 # ── Tile Base Colors (richer, more saturated) ────────────────────────────────
 TILE_COLOR = {
     TILE_GRASS: (38, 120, 38),   # deep forest green
@@ -89,13 +117,16 @@ TILE_SHADOW = {
 TILE_RADIUS = 3
 
 # ── Crops ─────────────────────────────────────────────────────────────────────
-CROP_NONE, CROP_WHEAT, CROP_SUNFLOWER, CROP_CORN = 0, 1, 2, 3
-CROP_NAMES = {0: "Empty", 1: "Wheat", 2: "Sunflower", 3: "Corn"}
+CROP_NONE, CROP_WHEAT, CROP_SUNFLOWER, CROP_CORN, CROP_TOMATO, CROP_CARROT, CROP_POTATO = 0, 1, 2, 3, 4, 5, 6
+CROP_NAMES = {0: "Empty", 1: "Wheat", 2: "Sunflower", 3: "Corn", 4: "Tomato", 5: "Carrot", 6: "Potato"}
 CROP_COLOR = {
     0: (70, 55, 30),
     1: (230, 200, 60),    # wheat gold
     2: (255, 190, 20),    # sunflower yellow
     3: (160, 210, 50),    # corn green
+    4: (220, 40, 40),     # tomato red
+    5: (255, 140, 40),    # carrot orange
+    6: (180, 140, 80),    # potato brown
 }
 
 # Glow/shadow ellipse color under mature crops
@@ -103,9 +134,12 @@ CROP_GLOW_COLOR = {
     CROP_WHEAT:     (200, 160, 30, 55),
     CROP_SUNFLOWER: (230, 170, 20, 55),
     CROP_CORN:      (160, 200, 40, 55),
+    CROP_TOMATO:    (200, 30, 30, 55),
+    CROP_CARROT:    (230, 120, 20, 55),
+    CROP_POTATO:    (160, 120, 60, 55),
 }
 
-CROP_VALUE = {0: 0, 1: 10, 2: 20, 3: 15}
+CROP_VALUE = {0: 0, 1: 10, 2: 20, 3: 15, 4: 25, 5: 18, 6: 12}
 
 # ── Hover tile ────────────────────────────────────────────────────────────────
 C_TILE_HOVER_BORDER = (140, 240, 100)
