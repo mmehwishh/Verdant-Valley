@@ -1,3 +1,4 @@
+import math
 from utils.constants import *
 
 
@@ -7,6 +8,7 @@ class SeasonManager:
         self.tick = 0
         self.rain_active = False
         self.rain_timer = 0
+        self.bloom = 0.0
 
     @property
     def name(self):
@@ -28,7 +30,7 @@ class SeasonManager:
                         t.crop_stage += 1
 
         # Random rain every ~15 seconds in summer
-        if self.name == "Summer" and self.tick % (15 * FPS) == 0:
+        if self.name == "☀️ Summer" and self.tick % (15 * FPS) == 0:
             self.rain_active = True
             self.rain_timer = 5 * FPS
             grid.apply_rain()
@@ -38,6 +40,9 @@ class SeasonManager:
             if self.rain_timer <= 0:
                 self.rain_active = False
 
+        # Seasonal bloom pulse for UI shine
+        self.bloom = abs(math.sin(self.tick * 0.02))
+
         # Season end
         if self.tick >= SEASON_DURATION:
             self._advance(grid)
@@ -45,8 +50,10 @@ class SeasonManager:
     def _advance(self, grid):
         self.tick = 0
         self.index += 1
-        # Clear crops at winter end
-        if self.name == "Spring":
+        # Reset rain/wet status at season boundaries
+        self.rain_active = False
+        self.rain_timer = 0
+        if self.name == "🌱 Spring":
             for c in range(grid.cols):
                 for r in range(grid.rows):
                     grid.tiles[c][r].wet = False

@@ -23,6 +23,7 @@ from src.agents.animal import Animal
 from src.algorithms.csp import CSPSolver
 from game_ui import UIManager, FontCache
 from game_ui.csp_panel import CSPPanel
+from game_ui.metrics_panel import MetricsPanel
 
 # Initialize font cache
 from game_ui.fonts import FontCache
@@ -302,6 +303,7 @@ class Game:
         self.csp_log_idx = 0
         self.csp_assignment = {}
         self.csp_tick = 0
+        self.game_tick = 0
 
     # ── Setup helpers ─────────────────────────────────────────────────────────
 
@@ -312,6 +314,7 @@ class Game:
         self.agents = [self.farmer, self.guard, self.animal]
         self.ui = UIManager(self.screen)
         self.csp_panel = CSPPanel(self.screen)
+        self.metrics_panel = MetricsPanel(self.screen)
 
         # Run CSP
         self.csp_solver = run_csp(self.grid)
@@ -374,6 +377,7 @@ class Game:
                 # Respawn animal if caught
                 if not self.animal.alive:
                     self.animal.respawn(16, 1)
+                self.game_tick += 1
 
             # ── Draw ──────────────────────────────────────────────────────────
             if self.state == STATE_LOADING:
@@ -444,7 +448,7 @@ class Game:
         self.screen.fill(C_BG_DARK)
 
         # Grid area
-        self.grid.draw(self.screen)
+        self.grid.draw(self.screen, self.game_tick)
 
         # Path overlays
         self.farmer.draw_path_overlay(self.screen, C_PATH_FARMER)
@@ -460,8 +464,32 @@ class Game:
             ag.draw(self.screen, f_tiny)
 
         # UI chrome
-        self.ui.draw_hud(self.season, self.agents, self.paused)
+        self.ui.draw_hud(self.season, self.agents, self.paused, self.game_tick)
         self.ui.draw_sidebar(self.grid, self.season, self.agents)
+        self.metrics_panel.draw(self.grid, self.agents)
+
+        # Seasonal atmosphere
+        season_tints = {
+            "🌱 Spring": (20, 40, 20, 30),
+            "☀️ Summer": (40, 20, 0, 40),
+            "🍂 Autumn": (40, 20, 0, 40),
+            "❄️ Winter": (0, 20, 40, 30),
+        }
+        if self.season.name in season_tints:
+            tint = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+            tint.fill(season_tints[self.season.name])
+            self.screen.blit(tint, (0, 0))
+
+        # Weather overlay
+        if self.season.rain_active:
+            rain_overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+            rain_overlay.fill((100, 120, 150, 20))
+            # Rain particles
+            for i in range(30):
+                rx = (self.game_tick * 3 + i * 25) % SCREEN_W
+                ry = (self.game_tick * 5 + i * 15) % (SCREEN_H + 20)
+                pygame.draw.line(rain_overlay, (150, 170, 200, 150), (rx, ry), (rx + 8, ry + 16), 1)
+            self.screen.blit(rain_overlay, (0, 0))
 
         if self.paused:
             overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)

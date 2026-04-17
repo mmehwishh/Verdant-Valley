@@ -64,8 +64,12 @@ class Agent:
         self._move_along_path()
 
     def draw(self, surface, font=None):
-        # Body circle
+        # Shadow
+        shadow_color = (0, 0, 0, 80)
         radius = TILE_SIZE // 2 - 4
+        pygame.draw.circle(surface, shadow_color, (int(self.px) + 3, int(self.py) + 3), radius)
+
+        # Body circle
         pygame.draw.circle(surface, self.color, (int(self.px), int(self.py)), radius)
         # Dark outline
         pygame.draw.circle(surface, (0, 0, 0), (int(self.px), int(self.py)), radius, 2)

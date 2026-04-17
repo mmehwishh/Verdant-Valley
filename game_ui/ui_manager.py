@@ -3,6 +3,7 @@ UIManager - Enhanced UI with better visuals
 """
 
 import pygame
+import random
 from utils.constants import *
 from utils.helpers import draw_rounded_rect, draw_text
 from game_ui.fonts import FontCache
@@ -12,63 +13,125 @@ class UIManager:
     def __init__(self, screen):
         self.screen = screen
 
-    def draw_hud(self, season_mgr, agents, paused=False):
-        # Draw HUD background with gradient
-        for i in range(GRID_OFFSET_Y):
-            ratio = i / GRID_OFFSET_Y
-            color = (
-                int(C_HUD_BG[0] * (1 - ratio) + 20 * ratio),
-                int(C_HUD_BG[1] * (1 - ratio) + 30 * ratio),
-                int(C_HUD_BG[2] * (1 - ratio) + 20 * ratio),
-            )
-            pygame.draw.line(self.screen, color, (0, i), (SCREEN_W, i))
-
-        pygame.draw.line(
-            self.screen,
-            C_HUD_BORD,
-            (0, GRID_OFFSET_Y - 1),
-            (SCREEN_W, GRID_OFFSET_Y - 1),
-            2,
+    def draw_hud(self, season_mgr, agents, paused=False, tick=0):
+        # Glassy HUD strip
+        hud_surface = pygame.Surface((SCREEN_W, GRID_OFFSET_Y), pygame.SRCALPHA)
+        hud_surface.fill((20, 28, 22, 210))
+        pygame.draw.rect(
+            hud_surface,
+            (255, 255, 255, 30),
+            (10, 10, SCREEN_W - 20, GRID_OFFSET_Y - 20),
+            border_radius=18,
         )
+        pygame.draw.rect(
+            hud_surface,
+            (255, 255, 255, 60),
+            (10, 10, SCREEN_W - 20, GRID_OFFSET_Y - 20),
+            1,
+            border_radius=18,
+        )
+        self.screen.blit(hud_surface, (0, 0))
 
         f_title = FontCache.get(FONT_MEDIUM, bold=True)
         f_normal = FontCache.get(FONT_SMALL)
+        f_tiny = FontCache.get(FONT_TINY)
 
-        # Season display with icon
-        season_icon = season_mgr.name
-        season_text = f_title.render(season_icon, True, C_TEXT_GOLD)
-        self.screen.blit(season_text, (20, 15))
-
-        # Time remaining
-        time_text = f_normal.render(
-            f"Time: {season_mgr.time_label()}", True, C_TEXT_DIM
+        # Season card
+        card_rect = pygame.Rect(20, 15, 280, 70)
+        draw_rounded_rect(
+            self.screen,
+            (18, 34, 28, 210),
+            card_rect,
+            radius=16,
+            border=2,
+            border_color=(120, 185, 110),
         )
-        self.screen.blit(time_text, (20, 45))
+
+        season_text = f_title.render(season_mgr.name, True, C_TEXT_GOLD)
+        self.screen.blit(season_text, (card_rect.x + 16, card_rect.y + 12))
+
+        time_text = f_normal.render(
+            f"⏱ {season_mgr.time_label()}", True, C_TEXT_MAIN
+        )
+        self.screen.blit(time_text, (card_rect.x + 16, card_rect.y + 42))
+
+        # Seasonal bloom glow
+        glow_radius = 28 + int(season_mgr.bloom * 6)
+        glow_surf = pygame.Surface((glow_radius * 2, glow_radius * 2), pygame.SRCALPHA)
+        pygame.draw.circle(
+            glow_surf,
+            (255, 215, 120, 80),
+            (glow_radius, glow_radius),
+            glow_radius,
+        )
+        self.screen.blit(glow_surf, (card_rect.right - glow_radius - 10, card_rect.y + 12))
 
         # Season progress bar
-        bar_x, bar_y, bar_w, bar_h = 20, 65, 200, 8
+        bar_x, bar_y, bar_w, bar_h = 320, 35, 260, 12
         pygame.draw.rect(
-            self.screen, C_PROGRESS_BG, (bar_x, bar_y, bar_w, bar_h), border_radius=4
+            self.screen,
+            (20, 30, 24),
+            (bar_x, bar_y, bar_w, bar_h),
+            border_radius=6,
         )
         fill_w = int(bar_w * season_mgr.progress)
         if fill_w > 0:
+            fill_color = (
+                min(255, C_PROGRESS_FILL[0] + 20),
+                min(255, C_PROGRESS_FILL[1] + 20),
+                min(255, C_PROGRESS_FILL[2] + 20),
+            )
             pygame.draw.rect(
                 self.screen,
-                C_PROGRESS_FILL,
+                fill_color,
                 (bar_x, bar_y, fill_w, bar_h),
-                border_radius=4,
+                border_radius=6,
             )
         pygame.draw.rect(
-            self.screen, C_PANEL_BORD, (bar_x, bar_y, bar_w, bar_h), 1, border_radius=4
+            self.screen,
+            (255, 255, 255, 100),
+            (bar_x, bar_y, bar_w, bar_h),
+            1,
+            border_radius=6,
         )
 
-        # Agent scores with custom cards
-        score_x = 250
-        for i, agent in enumerate(agents):
+        progress_label = f_tiny.render(
+            f"Season progress {int(season_mgr.progress * 100)}%", True, C_TEXT_DIM
+        )
+        self.screen.blit(progress_label, (bar_x, bar_y + bar_h + 6))
+
+        # Rain indicator inside HUD
+        if season_mgr.rain_active:
+            rain_rect = pygame.Rect(580, 26, 200, 46)
+            draw_rounded_rect(
+                self.screen,
+                (18, 30, 40, 220),
+                rain_rect,
+                radius=16,
+                border=1,
+                border_color=C_TEXT_WARN,
+            )
+            rain_text = f_normal.render("🌧 Rain active", True, C_TEXT_WARN)
+            self.screen.blit(rain_text, (rain_rect.x + 18, rain_rect.y + 12))
+
+            for i in range(12):
+                rx = (rain_rect.x + 18 + i * 16 + tick * 3) % (rain_rect.x + rain_rect.width - 8)
+                ry = rain_rect.y + 26 + (i % 3) * 4
+                pygame.draw.line(
+                    self.screen,
+                    (150, 190, 220, 180),
+                    (rx, ry),
+                    (rx + 5, ry + 12),
+                    2,
+                )
+
+        # Agent cards and rest of HUD with icon-rich farm look
+        score_x = 20
+        card_y = 15
+        for agent in agents:
             if hasattr(agent, "alive") and not agent.alive:
                 continue
 
-            # Determine color
             if "Farmer" in agent.name:
                 color = C_FARMER
                 icon = "🌾"
@@ -79,31 +142,35 @@ class UIManager:
                 color = C_ANIMAL
                 icon = "🐮"
 
-            # Score card background
-            card_rect = pygame.Rect(score_x, 10, 180, 60)
-            pygame.draw.rect(self.screen, C_BG_PANEL, card_rect, border_radius=8)
-            pygame.draw.rect(self.screen, color, card_rect, 2, border_radius=8)
+            card_rect = pygame.Rect(score_x, card_y, 190, 70)
+            draw_rounded_rect(
+                self.screen,
+                (25, 35, 28, 220),
+                card_rect,
+                radius=14,
+                border=1,
+                border_color=(color[0], color[1], color[2], 180),
+            )
+            pygame.draw.rect(
+                self.screen,
+                (color[0], color[1], color[2], 40),
+                (card_rect.x + 10, card_rect.y + 42, 160, 18),
+                border_radius=8,
+            )
 
-            # Agent info
-            name_text = f_normal.render(f"{icon} {agent.name}", True, C_TEXT_MAIN)
-            self.screen.blit(name_text, (score_x + 10, 18))
+            icon_text = f_normal.render(icon, True, color)
+            self.screen.blit(icon_text, (score_x + 14, card_y + 12))
+
+            name_text = f_normal.render(f"{agent.name}", True, C_TEXT_MAIN)
+            self.screen.blit(name_text, (score_x + 40, card_y + 10))
+
+            state_text = f_tiny.render(agent.state, True, C_TEXT_DIM)
+            self.screen.blit(state_text, (score_x + 40, card_y + 34))
 
             score_text = f_title.render(f"{agent.score}", True, C_TEXT_GOLD)
-            self.screen.blit(score_text, (score_x + 10, 38))
+            self.screen.blit(score_text, (score_x + 14, card_y + 46))
 
-            score_x += 190
-
-        # Rain effect indicator
-        if season_mgr.rain_active:
-            rain_text = f_title.render("🌧 RAINING!", True, C_TEXT_WARN)
-            rain_rect = rain_text.get_rect(center=(SCREEN_W // 2, 40))
-            self.screen.blit(rain_text, rain_rect)
-
-            # Rain particles
-            for _ in range(50):
-                x = random.randint(0, SCREEN_W)
-                y = random.randint(0, GRID_OFFSET_Y)
-                pygame.draw.line(self.screen, (100, 150, 200), (x, y), (x, y + 5), 2)
+            score_x += 200
 
         # Pause overlay
         if paused:
@@ -128,17 +195,28 @@ class UIManager:
         sw = SIDEBAR_W
         sh = SCREEN_H - sy
 
-        # Panel background with gradient
-        for i in range(sh):
-            ratio = i / sh
-            color = (
-                int(C_BG_PANEL[0] * (1 - ratio) + 30 * ratio),
-                int(C_BG_PANEL[1] * (1 - ratio) + 40 * ratio),
-                int(C_BG_PANEL[2] * (1 - ratio) + 30 * ratio),
-            )
-            pygame.draw.line(self.screen, color, (sx, sy + i), (sx + sw, sy + i))
+        sidebar_surface = pygame.Surface((sw, sh), pygame.SRCALPHA)
+        sidebar_surface.fill((18, 28, 22, 220))
+        draw_rounded_rect(
+            sidebar_surface,
+            (24, 38, 28, 220),
+            pygame.Rect(4, 4, sw - 8, sh - 8),
+            radius=18,
+            border=2,
+            border_color=(90, 120, 90),
+        )
 
-        pygame.draw.rect(self.screen, C_PANEL_BORD, (sx, sy, sw, sh), 2)
+        for i in range(sh - 16):
+            ratio = i / (sh - 16)
+            color = (
+                int(30 * (1 - ratio) + 20 * ratio),
+                int(46 * (1 - ratio) + 30 * ratio),
+                int(36 * (1 - ratio) + 28 * ratio),
+                18,
+            )
+            pygame.draw.line(sidebar_surface, color, (14, 12 + i), (sw - 14, 12 + i))
+
+        self.screen.blit(sidebar_surface, (sx, sy))
 
         f_title = FontCache.get(FONT_MEDIUM, bold=True)
         f_normal = FontCache.get(FONT_SMALL)

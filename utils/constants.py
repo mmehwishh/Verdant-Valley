@@ -7,7 +7,7 @@ FPS = 60
 TILE_SIZE = 48
 GRID_COLS, GRID_ROWS = 18, 14
 SIDEBAR_W = 320
-GRID_OFFSET_X, GRID_OFFSET_Y = 0, 80  # Increased top offset for better HUD
+GRID_OFFSET_X, GRID_OFFSET_Y = 0, 80
 
 # Enhanced Color Palette
 C_BG_DARK = (18, 26, 18)
@@ -25,7 +25,7 @@ C_TEXT_WARN = (255, 120, 60)
 C_TEXT_SUCCESS = (100, 255, 100)
 C_TEXT_TITLE = (255, 220, 150)
 
-# Agent Colors (more vibrant)
+# Agent Colors
 C_FARMER = (100, 200, 80)
 C_GUARD = (220, 80, 60)
 C_ANIMAL = (240, 180, 60)
@@ -55,28 +55,73 @@ TILE_COST = {
     TILE_FIELD: 1.0,
 }
 
-# Enhanced Tile Colors with gradients
+# ── Tile Base Colors (richer, more saturated) ────────────────────────────────
 TILE_COLOR = {
-    TILE_GRASS: (56, 95, 40),
-    TILE_DIRT: (94, 68, 42),
-    TILE_STONE: (100, 100, 110),
-    TILE_MUD: (85, 62, 40),
-    TILE_WATER: (40, 90, 160),
-    TILE_FIELD: (101, 67, 33),
+    TILE_GRASS: (38, 120, 38),   # deep forest green
+    TILE_DIRT:  (122, 72, 28),   # warm saddle brown
+    TILE_STONE: (142, 140, 132), # warm gray stone
+    TILE_MUD:   (80, 50, 22),    # dark wet mud
+    TILE_WATER: (20, 80, 160),   # rich deep blue
+    TILE_FIELD: (118, 66, 22),   # tilled dark sienna
 }
 
-# Crops
+# ── Tile Highlight (top-face lighter shade) ───────────────────────────────────
+TILE_HIGHLIGHT = {
+    TILE_GRASS: (70, 170, 55),
+    TILE_DIRT:  (162, 102, 52),
+    TILE_STONE: (188, 186, 178),
+    TILE_MUD:   (108, 72, 38),
+    TILE_WATER: (40, 120, 210),
+    TILE_FIELD: (158, 96, 44),
+}
+
+# ── Tile Shadow (bottom-face darker shade) ───────────────────────────────────
+TILE_SHADOW = {
+    TILE_GRASS: (18, 80, 18),
+    TILE_DIRT:  (82, 42, 8),
+    TILE_STONE: (100, 98, 92),
+    TILE_MUD:   (50, 28, 8),
+    TILE_WATER: (8, 40, 110),
+    TILE_FIELD: (78, 36, 8),
+}
+
+# ── Tile corner radius ────────────────────────────────────────────────────────
+TILE_RADIUS = 3
+
+# ── Crops ─────────────────────────────────────────────────────────────────────
 CROP_NONE, CROP_WHEAT, CROP_SUNFLOWER, CROP_CORN = 0, 1, 2, 3
 CROP_NAMES = {0: "Empty", 1: "Wheat", 2: "Sunflower", 3: "Corn"}
-CROP_COLOR = {0: (70, 55, 30), 1: (230, 200, 60), 2: (255, 180, 0), 3: (180, 220, 60)}
+CROP_COLOR = {
+    0: (70, 55, 30),
+    1: (230, 200, 60),    # wheat gold
+    2: (255, 190, 20),    # sunflower yellow
+    3: (160, 210, 50),    # corn green
+}
+
+# Glow/shadow ellipse color under mature crops
+CROP_GLOW_COLOR = {
+    CROP_WHEAT:     (200, 160, 30, 55),
+    CROP_SUNFLOWER: (230, 170, 20, 55),
+    CROP_CORN:      (160, 200, 40, 55),
+}
+
 CROP_VALUE = {0: 0, 1: 10, 2: 20, 3: 15}
+
+# ── Hover tile ────────────────────────────────────────────────────────────────
+C_TILE_HOVER_BORDER = (140, 240, 100)
+C_TILE_HOVER_FILL   = (100, 220, 70, 30)   # SRCALPHA overlay
+
+# ── Season tints (RGBA overlay on entire grid) ───────────────────────────────
+SEASON_TINTS = {
+    0: (60, 180, 60,  12),   # Spring: fresh green
+    1: (255, 220, 80, 10),   # Summer: warm yellow
+    2: (200, 100, 20, 18),   # Autumn: amber orange
+    3: (160, 200, 240, 22),  # Winter: cold blue
+}
 
 # Game States
 STATE_LOADING, STATE_MENU, STATE_CSP_VIZ, STATE_PLAYING = (
-    "loading",
-    "menu",
-    "csp_viz",
-    "playing",
+    "loading", "menu", "csp_viz", "playing",
 )
 STATE_PAUSED, STATE_GA_VIZ, STATE_GAMEOVER = "paused", "ga_viz", "gameover"
 
@@ -86,13 +131,7 @@ SEASON_DURATION = 30 * FPS
 
 # Font Sizes
 FONT_HUGE, FONT_TITLE, FONT_LARGE, FONT_MEDIUM, FONT_SMALL, FONT_TINY = (
-    72,
-    48,
-    28,
-    20,
-    15,
-    12,
+    72, 48, 28, 20, 15, 12,
 )
 
-# Try to use a nicer system font
-FONT_NAME = "Arial"  # Change to "Segoe UI", "Helvetica", or "Consolas" based on your OS
+FONT_NAME = "Arial"
