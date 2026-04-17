@@ -1,518 +1,835 @@
 """
-main.py — Verdant Valley
-Run: python main.py
+main.py — Verdant Valley (Full Game with Menu, Settings & Music Control)
 """
 
 import sys
 import pygame
-import random
-
-# Add parent directory to path for imports
 import os
-import sys
+import random
+import cv2
+import numpy as np
 
+# Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from utils.constants import *
-from utils.helpers import tile_center
 from src.world.environment.grid import Grid
 from src.world.environment.season import SeasonManager
 from src.agents.farmer import Farmer
 from src.agents.guard import Guard
 from src.agents.animal import Animal
 from src.algorithms.csp import CSPSolver
-from game_ui import UIManager, FontCache
-from game_ui.csp_panel import CSPPanel
-from game_ui.metrics_panel import MetricsPanel
-
-# Initialize font cache
-from game_ui.fonts import FontCache
-
-FontCache.clear()
+from game_ui.farm_layout import FarmUI
+from game_ui.csp_popup import CSPPopup
 
 
-class LoadingScreen:
-    def __init__(self, screen):
-        self.screen = screen
-        self.progress = 0.0
-        self.done = False
-        self._tick = 0
+class VideoLoader:
+    """Handles video playback (streaming - no preloading)"""
 
-    def update(self, dt=1):
-        self._tick += 1
-        self.progress = min(1.0, self._tick / 120)
-        if self.progress >= 1.0:
-            self.done = True
+    def __init__(self, video_path):
+        self.cap = cv2.VideoCapture(video_path)
+        if not self.cap.isOpened():
+            print(f"Could not open video: {video_path}")
+            self.cap = None
+        else:
+            self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+            self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            print(f"✓ Video loaded: {self.total_frames} frames")
 
-    def draw(self):
-        s = self.screen
-        s.fill(C_BG_DARK)
+    def get_frame(self):
+        """Get next frame without loading all at once"""
+        if not self.cap:
+            return None
 
-        f_title = FontCache.get(FONT_HUGE, bold=True)
-        f_sub = FontCache.get(FONT_LARGE)
+        ret, frame = self.cap.read()
+        if not ret:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ret, frame = self.cap.read()
 
-        from utils.helpers import draw_text
+        if ret:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = np.rot90(frame)
+            frame = pygame.surfarray.make_surface(frame)
+            frame = pygame.transform.scale(frame, (SCREEN_W, SCREEN_H))
+            return frame
+        return None
 
-        draw_text(
-            s,
-            "VERDANT VALLEY",
-            f_title,
-            C_TEXT_GOLD,
-            SCREEN_W // 2,
-            SCREEN_H // 2 - 80,
-            "center",
-        )
-        draw_text(
-            s,
-            "Multi-Agent AI Farming Simulation",
-            f_sub,
-            C_TEXT_DIM,
-            SCREEN_W // 2,
-            SCREEN_H // 2,
-            "center",
-        )
-
-        # Progress bar
-        bar_w = 400
-        bar_h = 10
-        bx = SCREEN_W // 2 - bar_w // 2
-        by = SCREEN_H // 2 + 60
-        pygame.draw.rect(s, C_BG_MID, (bx, by, bar_w, bar_h), border_radius=5)
-        fill = int(bar_w * self.progress)
-        if fill > 0:
-            pygame.draw.rect(s, C_GRASS, (bx, by, fill, bar_h), border_radius=5)
-        pygame.draw.rect(s, C_PANEL_BORD, (bx, by, bar_w, bar_h), 1, border_radius=5)
-
-        pct = FontCache.get(FONT_SMALL)
-        draw_text(
-            s,
-            f"Loading... {int(self.progress*100)}%",
-            pct,
-            C_TEXT_DIM,
-            SCREEN_W // 2,
-            by + 20,
-            "center",
-        )
+    def __del__(self):
+        if self.cap:
+            self.cap.release()
 
 
-class Button:
-    def __init__(self, label, rect, color_normal, color_hover, color_text=None):
-        self.label = label
-        self.rect = pygame.Rect(rect)
-        self.color_normal = color_normal
-        self.color_hover = color_hover
-        self.color_text = color_text or C_TEXT_MAIN
+class WoodButton:
+    """Button with wood texture appearance"""
+
+    def __init__(self, x, y, width, height, text, text_color=(255, 215, 0)):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.text = text
+        self.text_color = text_color
         self.hovered = False
+        self.font = pygame.font.Font(None, 32)
 
-    def handle(self, event):
+    def draw(self, screen):
+        # Wood colors (light wood)
+        wood_base = (160, 110, 60)
+        wood_dark = (130, 85, 45)
+        wood_light = (180, 130, 80)
+
+        color = wood_light if self.hovered else wood_base
+
+        # Draw wood grain texture
+        pygame.draw.rect(screen, color, self.rect, border_radius=12)
+
+        # Add wood grain lines
+        for i in range(3):
+            line_y = self.rect.y + 15 + i * 15
+            pygame.draw.line(
+                screen,
+                wood_dark,
+                (self.rect.x + 10, line_y),
+                (self.rect.x + self.rect.width - 10, line_y),
+                1,
+            )
+
+        # Draw border
+        pygame.draw.rect(screen, (100, 70, 40), self.rect, 2, border_radius=12)
+
+        # Draw text
+        text_surf = self.font.render(self.text, True, self.text_color)
+        text_rect = text_surf.get_rect(center=self.rect.center)
+        screen.blit(text_surf, text_rect)
+
+    def handle_event(self, event):
         if event.type == pygame.MOUSEMOTION:
             self.hovered = self.rect.collidepoint(event.pos)
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+        elif event.type == pygame.MOUSEBUTTONDOWN:
             if self.rect.collidepoint(event.pos):
                 return True
         return False
 
-    def draw(self, surface):
-        from utils.helpers import draw_rounded_rect, draw_text
 
-        col = self.color_hover if self.hovered else self.color_normal
-        draw_rounded_rect(
-            surface, col, self.rect, radius=10, border=1, border_color=C_PANEL_BORD
+class Slider:
+    def __init__(self, x, y, width, min_val=0, max_val=100, initial=70):
+        self.rect = pygame.Rect(x, y, width, 10)
+        self.knob_radius = 8
+        self.min_val = min_val
+        self.max_val = max_val
+        self.value = initial
+        self.dragging = False
+
+    def draw(self, screen, font):
+        pygame.draw.rect(screen, (50, 50, 70), self.rect, border_radius=5)
+        fill_width = int(
+            (self.value - self.min_val)
+            / (self.max_val - self.min_val)
+            * self.rect.width
         )
-        f = FontCache.get(FONT_MEDIUM)
-        draw_text(
-            surface,
-            self.label,
-            f,
-            self.color_text,
-            self.rect.centerx,
-            self.rect.centery,
-            "center",
+        fill_rect = pygame.Rect(self.rect.x, self.rect.y, fill_width, self.rect.height)
+        pygame.draw.rect(screen, (100, 200, 100), fill_rect, border_radius=5)
+        knob_x = self.rect.x + fill_width
+        pygame.draw.circle(
+            screen, (255, 215, 0), (knob_x, self.rect.centery), self.knob_radius
         )
+        pygame.draw.circle(
+            screen, (255, 255, 255), (knob_x, self.rect.centery), self.knob_radius - 2
+        )
+        value_text = font.render(f"{int(self.value)}%", True, (200, 200, 200))
+        screen.blit(value_text, (self.rect.right + 10, self.rect.centery - 8))
+
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            knob_x = self.rect.x + int(
+                (self.value - self.min_val)
+                / (self.max_val - self.min_val)
+                * self.rect.width
+            )
+            knob_rect = pygame.Rect(
+                knob_x - self.knob_radius,
+                self.rect.centery - self.knob_radius,
+                self.knob_radius * 2,
+                self.knob_radius * 2,
+            )
+            if knob_rect.collidepoint(event.pos):
+                self.dragging = True
+        elif event.type == pygame.MOUSEBUTTONUP:
+            self.dragging = False
+        elif event.type == pygame.MOUSEMOTION and self.dragging:
+            rel_x = max(0, min(event.pos[0] - self.rect.x, self.rect.width))
+            self.value = self.min_val + (rel_x / self.rect.width) * (
+                self.max_val - self.min_val
+            )
+            return True
+        return False
+
+
+class MusicManager:
+    def __init__(self):
+        self.volume = 0.7
+        self.music_playing = False
+        self.current_music = None
+
+    def load_music(self, music_path):
+        try:
+            pygame.mixer.music.load(music_path)
+            self.current_music = music_path
+            self.set_volume(self.volume)
+            return True
+        except:
+            return False
+
+    def play(self, loops=-1):
+        if self.current_music:
+            pygame.mixer.music.play(loops)
+            self.music_playing = True
+
+    def stop(self):
+        pygame.mixer.music.stop()
+        self.music_playing = False
+
+    def set_volume(self, volume):
+        self.volume = max(0.0, min(1.0, volume))
+        pygame.mixer.music.set_volume(self.volume)
+
+    def toggle(self):
+        if self.music_playing:
+            self.stop()
+        else:
+            self.play()
+
+
+class BackgroundImage:
+    def __init__(self, image_path):
+        self.image = None
+        try:
+            self.image = pygame.image.load(image_path).convert()
+            self.image = pygame.transform.scale(self.image, (SCREEN_W, SCREEN_H))
+            print(f"✓ Background image loaded: {image_path}")
+        except:
+            print(f"Background image not found: {image_path}")
+
+    def draw(self, screen):
+        if self.image:
+            screen.blit(self.image, (0, 0))
+        else:
+            screen.fill((25, 35, 30))
+
+
+class SettingsScreen:
+    def __init__(self, screen, music_manager):
+        self.screen = screen
+        self.music_manager = music_manager
+        self.font_title = pygame.font.Font(None, 52)
+        self.font_text = pygame.font.Font(None, 28)
+        self.font_small = pygame.font.Font(None, 20)
+
+        # Load background image for settings
+        self.background = BackgroundImage("assets/loading/image.png")
+
+        self.back_button = WoodButton(
+            SCREEN_W // 2 - 100, SCREEN_H - 80, 200, 50, "BACK"
+        )
+
+        self.volume_slider = Slider(
+            SCREEN_W // 2 - 150,
+            SCREEN_H // 2 - 20,
+            300,
+            0,
+            100,
+            int(music_manager.volume * 100),
+        )
+
+        self.music_toggle = WoodButton(
+            SCREEN_W // 2 - 100,
+            SCREEN_H // 2 - 100,
+            200,
+            50,
+            "MUSIC: ON" if music_manager.music_playing else "MUSIC: OFF",
+        )
+
+    def draw(self):
+        # Draw background image
+        self.background.draw(self.screen)
+
+        # Black overlay for text visibility (50% opacity)
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))
+        self.screen.blit(overlay, (0, 0))
+
+        # Settings panel
+        panel_w = 500
+        panel_h = 350
+        panel_x = SCREEN_W // 2 - panel_w // 2
+        panel_y = SCREEN_H // 2 - panel_h // 2
+
+        pygame.draw.rect(
+            self.screen,
+            (30, 35, 45),
+            (panel_x, panel_y, panel_w, panel_h),
+            border_radius=15,
+        )
+        pygame.draw.rect(
+            self.screen,
+            (100, 150, 100),
+            (panel_x, panel_y, panel_w, panel_h),
+            2,
+            border_radius=15,
+        )
+
+        title = self.font_title.render("SETTINGS", True, (255, 215, 0))
+        title_rect = title.get_rect(center=(SCREEN_W // 2, panel_y + 50))
+        self.screen.blit(title, title_rect)
+
+        music_label = self.font_text.render("MUSIC VOLUME", True, (200, 200, 200))
+        self.screen.blit(music_label, (panel_x + 50, panel_y + 130))
+
+        self.volume_slider.draw(self.screen, self.font_small)
+        self.music_toggle.text = (
+            "MUSIC: ON" if self.music_manager.music_playing else "MUSIC: OFF"
+        )
+        self.music_toggle.draw(self.screen)
+        self.back_button.draw(self.screen)
+
+    def handle_event(self, event):
+        if self.volume_slider.handle_event(event):
+            self.music_manager.set_volume(self.volume_slider.value / 100)
+            return None
+        if self.music_toggle.handle_event(event):
+            self.music_manager.toggle()
+            return None
+        if self.back_button.handle_event(event):
+            return "back"
+        return None
 
 
 class MainMenu:
-    def __init__(self, screen):
+    def __init__(self, screen, music_manager):
         self.screen = screen
-        self.animation_frame = 0
-        self.particles = []
+        self.music_manager = music_manager
+        self.font_title = pygame.font.Font(None, 96)  # Larger font for title
+        self.font_sub = pygame.font.Font(None, 32)
 
-        # Create floating particles
-        for _ in range(100):
-            self.particles.append(
-                {
-                    "x": random.randint(0, SCREEN_W),
-                    "y": random.randint(0, SCREEN_H),
-                    "vx": random.uniform(-0.5, 0.5),
-                    "vy": random.uniform(-0.5, 0.5),
-                    "size": random.randint(2, 5),
-                    "color": random.choice(
-                        [(80, 160, 60), (60, 120, 40), (100, 180, 80)]
-                    ),
-                }
-            )
+        # Load video for menu background
+        try:
+            self.video = VideoLoader("assets/loading/background.mp4")
+        except:
+            self.video = None
 
-        # Create buttons
-        bw, bh = 280, 60
-        cx = SCREEN_W // 2 - bw // 2
-        y_start = SCREEN_H // 2 + 50
+        btn_width = 280
+        btn_height = 65
+        center_x = SCREEN_W // 2 - btn_width // 2
+        start_y = SCREEN_H // 2
 
         self.buttons = [
-            {
-                "label": "🌾 START GAME",
-                "rect": pygame.Rect(cx, y_start, bw, bh),
-                "action": "start",
-            },
-            {
-                "label": "ℹ️ HOW TO PLAY",
-                "rect": pygame.Rect(cx, y_start + bh + 15, bw, bh),
-                "action": "howto",
-            },
-            {
-                "label": "🚪 QUIT",
-                "rect": pygame.Rect(cx, y_start + (bh + 15) * 2, bw, bh),
-                "action": "quit",
-            },
+            WoodButton(center_x, start_y, btn_width, btn_height, "START GAME"),
+            WoodButton(center_x, start_y + 85, btn_width, btn_height, "HOW TO PLAY"),
+            WoodButton(center_x, start_y + 170, btn_width, btn_height, "SETTINGS"),
+            WoodButton(center_x, start_y + 255, btn_width, btn_height, "QUIT"),
         ]
 
-        self.hovered_button = None
-
-    def handle(self, event):
-        if event.type == pygame.MOUSEMOTION:
-            for btn in self.buttons:
-                if btn["rect"].collidepoint(event.pos):
-                    self.hovered_button = btn
-                    return None
-            self.hovered_button = None
-
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            for btn in self.buttons:
-                if btn["rect"].collidepoint(event.pos):
-                    return btn["action"]
-        return None
-
-    def update(self):
-        self.animation_frame += 1
-        # Update particles
-        for p in self.particles:
-            p["x"] += p["vx"]
-            p["y"] += p["vy"]
-            if p["x"] < 0 or p["x"] > SCREEN_W or p["y"] < 0 or p["y"] > SCREEN_H:
-                p["x"] = random.randint(0, SCREEN_W)
-                p["y"] = random.randint(0, SCREEN_H)
-
     def draw(self):
-        self.screen.fill(C_BG_DARK)
+        # Draw video background
+        if self.video:
+            frame = self.video.get_frame()
+            if frame:
+                self.screen.blit(frame, (0, 0))
+        else:
+            self.screen.fill((18, 26, 18))
 
-        # Draw gradient background
-        for i in range(SCREEN_H):
-            ratio = i / SCREEN_H
-            color = (
-                int(C_BG_DARK[0] * (1 - ratio) + 20 * ratio),
-                int(C_BG_DARK[1] * (1 - ratio) + 40 * ratio),
-                int(C_BG_DARK[2] * (1 - ratio) + 20 * ratio),
-            )
-            pygame.draw.line(self.screen, color, (0, i), (SCREEN_W, i))
+        # Lighter overlay (reduced opacity)
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 100))
+        self.screen.blit(overlay, (0, 0))
 
-        # Draw particles
-        for p in self.particles:
-            alpha = int(abs(p["vx"]) * 100 + 50)
-            color = (p["color"][0], p["color"][1], p["color"][2], min(255, alpha))
-            pygame.draw.circle(
-                self.screen, p["color"], (int(p["x"]), int(p["y"])), p["size"]
-            )
-
-        # Title with glow effect
-        f_title = FontCache.get(FONT_HUGE, bold=True)
-        f_sub = FontCache.get(FONT_LARGE)
-
-        # Draw shadow
-        title_shadow = f_title.render("VERDANT VALLEY", True, (0, 0, 0))
-        shadow_rect = title_shadow.get_rect(
-            center=(SCREEN_W // 2 + 4, SCREEN_H // 2 - 100 + 4)
+        # Title with shadow effect
+        title_shadow = self.font_title.render("VERDANT VALLEY", True, (0, 0, 0))
+        title_shadow_rect = title_shadow.get_rect(
+            center=(SCREEN_W // 2 + 4, SCREEN_H // 2 - 180 + 4)
         )
-        self.screen.blit(title_shadow, shadow_rect)
+        self.screen.blit(title_shadow, title_shadow_rect)
 
-        # Draw title with gradient
-        title = f_title.render("VERDANT VALLEY", True, C_TEXT_TITLE)
-        title_rect = title.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2 - 100))
+        title = self.font_title.render("VERDANT VALLEY", True, (255, 215, 0))
+        title_rect = title.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2 - 180))
         self.screen.blit(title, title_rect)
 
-        # Draw subtitle
-        subtitle = f_sub.render("Multi-Agent AI Farming Simulation", True, C_TEXT_GOLD)
-        subtitle_rect = subtitle.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2 - 40))
-        self.screen.blit(subtitle, subtitle_rect)
+        subtitle = self.font_sub.render(
+            "Multi-Agent AI Farming Simulation", True, (200, 200, 200)
+        )
+        sub_rect = subtitle.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2 - 110))
+        self.screen.blit(subtitle, sub_rect)
 
-        # Draw buttons
-        f_button = FontCache.get(FONT_MEDIUM, bold=True)
         for btn in self.buttons:
-            rect = btn["rect"]
-            is_hover = self.hovered_button == btn
+            btn.draw(self.screen)
 
-            # Button background
-            color = C_BUTTON_HOVER if is_hover else C_BUTTON_NORMAL
-            pygame.draw.rect(self.screen, color, rect, border_radius=12)
-            pygame.draw.rect(self.screen, C_TEXT_GOLD, rect, 2, border_radius=12)
-
-            # Button text
-            text_color = C_TEXT_GOLD if is_hover else C_TEXT_MAIN
-            text = f_button.render(btn["label"], True, text_color)
-            text_rect = text.get_rect(center=rect.center)
-            self.screen.blit(text, text_rect)
+    def handle_event(self, event):
+        for i, btn in enumerate(self.buttons):
+            if btn.handle_event(event):
+                return i
+        return -1
 
 
-def make_agents(grid):
-    """Spawn agents at sensible starting positions."""
-    farmer = Farmer(6, 6)
-    guard = Guard(10, 10)
-    animal = Animal(16, 1)
+class HowToPlayScreen:
+    def __init__(self, screen):
+        self.screen = screen
+        self.font_title = pygame.font.Font(None, 52)
+        self.font_text = pygame.font.Font(None, 22)
 
-    # Guard patrol waypoints
-    guard.set_waypoints([(4, 2), (13, 2), (13, 11), (4, 11)])
+        # Load background image for how to play
+        self.background = BackgroundImage("assets/loading/image.png")
 
-    return farmer, guard, animal
+        self.back_button = WoodButton(
+            SCREEN_W // 2 - 100, SCREEN_H - 80, 200, 50, "BACK"
+        )
+
+    def draw(self):
+        # Draw background image
+        self.background.draw(self.screen)
+
+        # Black overlay for text visibility
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))
+        self.screen.blit(overlay, (0, 0))
+
+        title = self.font_title.render("HOW TO PLAY", True, (255, 215, 0))
+        title_rect = title.get_rect(center=(SCREEN_W // 2, 60))
+        self.screen.blit(title, title_rect)
+
+        instructions = [
+            "VERDANT VALLEY - AI FARMING SIMULATION",
+            "",
+            "CONTROLS:",
+            "   P - Pause/Resume Game",
+            "   ESC - Quit to Main Menu",
+            "   R - Restart Game",
+            "",
+            "AI AGENTS:",
+            "   FARMER - Harvests crops using A* pathfinding",
+            "   GUARD - Patrols and chases animals",
+            "   ANIMAL - Eats crops, evolves using Genetic Algorithm",
+            "",
+            "ALGORITHMS:",
+            "   A* Search - Optimal pathfinding with terrain costs",
+            "   CSP - Farm layout with backtracking",
+            "   Genetic Algorithm - Animal evolution over seasons",
+            "",
+            "GAME ENDS after 4 seasons (1 full year)",
+            "Final scores are displayed at the end",
+        ]
+
+        y = 120
+        for line in instructions:
+            if (
+                line.startswith("CONTROLS:")
+                or line.startswith("AI AGENTS:")
+                or line.startswith("ALGORITHMS:")
+                or line.startswith("GAME ENDS")
+            ):
+                color = (255, 215, 0)
+            elif line == "":
+                color = (0, 0, 0)
+            else:
+                color = (220, 220, 220)
+            text = self.font_text.render(line, True, color)
+            self.screen.blit(text, (80, y))
+            y += 28
+
+        self.back_button.draw(self.screen)
+
+    def handle_event(self, event):
+        if self.back_button.handle_event(event):
+            return "back"
+        return None
 
 
-def run_csp(grid):
-    """Solve CSP and return the solver."""
-    solver = CSPSolver(grid)
-    solver.solve()
-    return solver
+class EndScreen:
+    def __init__(self, screen, farmer_score, guard_score, animal_score):
+        self.screen = screen
+        self.farmer_score = farmer_score
+        self.guard_score = guard_score
+        self.animal_score = animal_score
+        self.font_title = pygame.font.Font(None, 52)
+        self.font_large = pygame.font.Font(None, 36)
+        self.font_medium = pygame.font.Font(None, 24)
+
+        self.restart_button = WoodButton(
+            SCREEN_W // 2 - 130, SCREEN_H - 100, 120, 50, "RESTART"
+        )
+        self.menu_button = WoodButton(
+            SCREEN_W // 2 + 10, SCREEN_H - 100, 120, 50, "MENU"
+        )
+
+    def draw(self):
+        self.screen.fill((18, 26, 18))
+
+        title = self.font_title.render("GAME COMPLETE!", True, (255, 215, 0))
+        title_rect = title.get_rect(center=(SCREEN_W // 2, 80))
+        self.screen.blit(title, title_rect)
+
+        subtitle = self.font_large.render("Final Scores", True, (200, 200, 200))
+        sub_rect = subtitle.get_rect(center=(SCREEN_W // 2, 140))
+        self.screen.blit(subtitle, sub_rect)
+
+        card_width = 250
+        card_height = 120
+        spacing = 30
+        total_width = card_width * 3 + spacing * 2
+        start_x = (SCREEN_W - total_width) // 2
+        y = 200
+
+        # Farmer Card
+        farmer_rect = pygame.Rect(start_x, y, card_width, card_height)
+        pygame.draw.rect(self.screen, (40, 70, 40), farmer_rect, border_radius=12)
+        pygame.draw.rect(self.screen, (100, 180, 255), farmer_rect, 2, border_radius=12)
+        farmer_title = self.font_large.render("FARMER", True, (100, 180, 255))
+        farmer_score_text = self.font_large.render(
+            str(self.farmer_score), True, (255, 215, 0)
+        )
+        farmer_icon = self.font_medium.render("🌾", True, (255, 215, 0))
+        self.screen.blit(farmer_title, (start_x + 20, y + 15))
+        self.screen.blit(farmer_score_text, (start_x + 20, y + 60))
+        self.screen.blit(farmer_icon, (start_x + card_width - 50, y + 60))
+
+        # Guard Card
+        guard_x = start_x + card_width + spacing
+        guard_rect = pygame.Rect(guard_x, y, card_width, card_height)
+        pygame.draw.rect(self.screen, (40, 70, 40), guard_rect, border_radius=12)
+        pygame.draw.rect(self.screen, (255, 100, 100), guard_rect, 2, border_radius=12)
+        guard_title = self.font_large.render("GUARD", True, (255, 100, 100))
+        guard_score_text = self.font_large.render(
+            str(self.guard_score), True, (255, 215, 0)
+        )
+        guard_icon = self.font_medium.render("🛡️", True, (255, 215, 0))
+        self.screen.blit(guard_title, (guard_x + 20, y + 15))
+        self.screen.blit(guard_score_text, (guard_x + 20, y + 60))
+        self.screen.blit(guard_icon, (guard_x + card_width - 50, y + 60))
+
+        # Animal Card
+        animal_x = guard_x + card_width + spacing
+        animal_rect = pygame.Rect(animal_x, y, card_width, card_height)
+        pygame.draw.rect(self.screen, (40, 70, 40), animal_rect, border_radius=12)
+        pygame.draw.rect(self.screen, (255, 180, 100), animal_rect, 2, border_radius=12)
+        animal_title = self.font_large.render("ANIMAL", True, (255, 180, 100))
+        animal_score_text = self.font_large.render(
+            str(self.animal_score), True, (255, 215, 0)
+        )
+        animal_icon = self.font_medium.render("🐮", True, (255, 215, 0))
+        self.screen.blit(animal_title, (animal_x + 20, y + 15))
+        self.screen.blit(animal_score_text, (animal_x + 20, y + 60))
+        self.screen.blit(animal_icon, (animal_x + card_width - 50, y + 60))
+
+        self.restart_button.draw(self.screen)
+        self.menu_button.draw(self.screen)
+
+    def handle_event(self, event):
+        if self.restart_button.handle_event(event):
+            return "restart"
+        if self.menu_button.handle_event(event):
+            return "menu"
+        return None
 
 
 class Game:
     def __init__(self):
         pygame.init()
-        pygame.display.set_caption(WINDOW_TITLE)
+        pygame.mixer.init()
+        pygame.display.set_caption("Verdant Valley")
         self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
         self.clock = pygame.time.Clock()
 
-        self.state = STATE_LOADING
-        self.paused = False
+        self.state = "MENU"
+        self.running = True
+        self.game_tick = 0
+        self.completed_seasons = 0
 
-        self.loading = LoadingScreen(self.screen)
-        self.menu = None
-        self.ui = None
+        self.music_manager = MusicManager()
+        if self.music_manager.load_music("assets/loading/audio.mp3"):
+            self.music_manager.play()
+            print("✓ Background music loaded and playing")
+
+        self.font_small = pygame.font.Font(None, 16)
+        self.font_medium = pygame.font.Font(None, 20)
+        self.font_large = pygame.font.Font(None, 26)
+
         self.grid = None
         self.season = None
-        self.agents = []
-        self.farmer = self.guard = self.animal = None
-
-        # CSP animation state
         self.csp_solver = None
-        self.csp_log_idx = 0
-        self.csp_assignment = {}
-        self.csp_tick = 0
+        self.csp_popup = None
+        self.farm_ui = None
+        self.farmer = None
+        self.guard = None
+        self.animal = None
+        self.agents = []
+        self.last_season_index = 0
+
+        self.menu = MainMenu(self.screen, self.music_manager)
+        self.how_to_play = HowToPlayScreen(self.screen)
+        self.settings = SettingsScreen(self.screen, self.music_manager)
+        self.end_screen = None
+
+    def init_game(self):
+        self.grid = Grid()
+        self.season = SeasonManager()
+        self.completed_seasons = 0
+        self.last_season_index = self.season.index
+
+        self.csp_solver = CSPSolver(self.grid)
+        self.csp_solver.solve()
+        self.csp_solver.apply_to_grid()
+
+        self.csp_popup = CSPPopup(self.screen, self.grid, self.csp_solver)
+        self.farm_ui = FarmUI(self.grid)
+
+        self.farmer = Farmer(6, 6)
+        self.guard = Guard(10, 10)
+        self.animal = Animal(16, 1)
+        self.guard.set_waypoints([(4, 2), (13, 2), (13, 11), (4, 11)])
+        self.agents = [self.farmer, self.guard, self.animal]
+
         self.game_tick = 0
 
-    # ── Setup helpers ─────────────────────────────────────────────────────────
+    def check_end_condition(self):
+        if self.season.index < self.last_season_index:
+            self.completed_seasons += 1
+        self.last_season_index = self.season.index
+        if self.completed_seasons >= 1 and self.season.index == 0:
+            return True
+        return False
 
-    def _setup_game(self):
-        self.grid = Grid()
-        self.grid.add_house(2, 2)
-        self.season = SeasonManager()
-        self.farmer, self.guard, self.animal = make_agents(self.grid)
-        self.agents = [self.farmer, self.guard, self.animal]
-        self.ui = UIManager(self.screen)
-        self.csp_panel = CSPPanel(self.screen)
-        self.metrics_panel = MetricsPanel(self.screen)
+    def draw_minimap(self):
+        mini_w = 240
+        mini_h = 180
+        mini_x = SCREEN_W - mini_w - 15
+        mini_y = SCREEN_H - mini_h - 15
 
-        # Run CSP
-        self.csp_solver = run_csp(self.grid)
-        self.csp_log_idx = 0
-        self.csp_assignment = {}
-        self.csp_tick = 0
-        self.state = STATE_CSP_VIZ
+        panel = pygame.Surface((mini_w, mini_h), pygame.SRCALPHA)
+        panel.fill((20, 25, 30, 220))
+        self.screen.blit(panel, (mini_x, mini_y))
+        pygame.draw.rect(
+            self.screen, (80, 120, 80), (mini_x, mini_y, mini_w, mini_h), 2
+        )
 
-    # ── Main loop ─────────────────────────────────────────────────────────────
+        title = self.font_small.render("MINI MAP", True, (255, 215, 0))
+        self.screen.blit(title, (mini_x + 10, mini_y + 5))
+
+        map_x = mini_x + 10
+        map_y = mini_y + 25
+        map_w = mini_w - 20
+        map_h = mini_h - 40
+
+        cell_w = map_w / GRID_COLS
+        cell_h = map_h / GRID_ROWS
+
+        for row in range(GRID_ROWS):
+            for col in range(GRID_COLS):
+                cx = int(map_x + col * cell_w)
+                cy = int(map_y + row * cell_h)
+                cw = max(2, int(cell_w))
+                ch = max(2, int(cell_h))
+
+                tile = self.grid.get(col, row)
+                if tile:
+                    if tile.type == TILE_WATER:
+                        color = (40, 90, 160)
+                    elif tile.type == TILE_FIELD:
+                        color = (101, 67, 33)
+                    elif tile.type == TILE_GRASS:
+                        color = (56, 95, 40)
+                    elif tile.type == TILE_DIRT:
+                        color = (94, 68, 42)
+                    elif tile.type == TILE_STONE:
+                        color = (100, 100, 110)
+                    else:
+                        color = (85, 62, 40)
+                else:
+                    color = (80, 80, 80)
+
+                pygame.draw.rect(self.screen, color, (cx, cy, cw, ch))
+                pygame.draw.rect(self.screen, (50, 50, 60), (cx, cy, cw, ch), 1)
+
+        for agent in self.agents:
+            if hasattr(agent, "alive") and not agent.alive:
+                continue
+            dot_x = int(map_x + agent.col * cell_w)
+            dot_y = int(map_y + agent.row * cell_h)
+            if "Farmer" in agent.name:
+                color = (100, 180, 255)
+            elif "Guard" in agent.name:
+                color = (255, 100, 100)
+            else:
+                color = (255, 180, 100)
+            pygame.draw.circle(self.screen, color, (dot_x, dot_y), 4)
+
+    def draw_season_info(self):
+        panel_w = 180
+        panel_h = 65
+        panel_x = 15
+        panel_y = 15
+
+        panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
+        panel.fill((20, 25, 30, 220))
+        self.screen.blit(panel, (panel_x, panel_y))
+        pygame.draw.rect(
+            self.screen, (80, 120, 80), (panel_x, panel_y, panel_w, panel_h), 2
+        )
+
+        season_name = (
+            self.season.name.replace("🌱", "")
+            .replace("☀️", "")
+            .replace("🍂", "")
+            .replace("❄️", "")
+            .strip()
+        )
+        season_text = self.font_medium.render(
+            f"Season: {season_name}", True, (255, 215, 0)
+        )
+        self.screen.blit(season_text, (panel_x + 12, panel_y + 10))
+
+        day = (self.game_tick // 600) + 1
+        day_text = self.font_small.render(f"Day: {day}", True, (220, 220, 220))
+        self.screen.blit(day_text, (panel_x + 12, panel_y + 38))
+
+    def draw_pause_screen(self):
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 180))
+        self.screen.blit(overlay, (0, 0))
+
+        font_big = pygame.font.Font(None, 64)
+        font_small = pygame.font.Font(None, 24)
+
+        pause_text = font_big.render("PAUSED", True, (255, 215, 0))
+        pause_rect = pause_text.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2 - 30))
+        self.screen.blit(pause_text, pause_rect)
+
+        resume_text = font_small.render(
+            "Press P to Resume | ESC to Quit to Menu", True, (200, 200, 200)
+        )
+        resume_rect = resume_text.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2 + 30))
+        self.screen.blit(resume_text, resume_rect)
 
     def run(self):
-        while True:
-            dt = self.clock.tick(FPS)
+        while self.running:
+            self.clock.tick(FPS)
 
-            # ── Events ────────────────────────────────────────────────────────
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    pygame.quit()
-                    sys.exit()
+                    self.running = False
 
-                if self.state == STATE_MENU:
-                    result = self.menu.handle(event)
-                    if result == "start":
-                        self._setup_game()
-                    elif result == "quit":
-                        pygame.quit()
-                        sys.exit()
+                if self.state == "MENU":
+                    result = self.menu.handle_event(event)
+                    if result == 0:
+                        self.init_game()
+                        self.state = "CSP"
+                    elif result == 1:
+                        self.state = "HOWTOPLAY"
+                    elif result == 2:
+                        self.state = "SETTINGS"
+                    elif result == 3:
+                        self.running = False
 
-                if self.state == STATE_PLAYING:
+                elif self.state == "HOWTOPLAY":
+                    if self.how_to_play.handle_event(event) == "back":
+                        self.state = "MENU"
+
+                elif self.state == "SETTINGS":
+                    if self.settings.handle_event(event) == "back":
+                        self.state = "MENU"
+
+                elif self.state == "CSP":
+                    if self.csp_popup.handle_event(event):
+                        if self.csp_popup.is_confirmed():
+                            self.state = "PLAYING"
+                            self.game_tick = 0
+
+                elif self.state == "PLAYING":
                     if event.type == pygame.KEYDOWN:
                         if event.key == pygame.K_p:
-                            self.paused = not self.paused
-                        if event.key == pygame.K_r:
-                            self._setup_game()
+                            self.state = "PAUSED"
                         if event.key == pygame.K_ESCAPE:
-                            self.state = STATE_MENU
-                            self.menu = MainMenu(self.screen)
+                            self.init_game()
+                            self.state = "MENU"
+                        if event.key == pygame.K_r:
+                            self.init_game()
+                            self.state = "CSP"
 
-                if self.state == STATE_CSP_VIZ:
-                    if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-                        self._finish_csp()
+                elif self.state == "PAUSED":
+                    if event.type == pygame.KEYDOWN:
+                        if event.key == pygame.K_p:
+                            self.state = "PLAYING"
+                        if event.key == pygame.K_ESCAPE:
+                            self.init_game()
+                            self.state = "MENU"
 
-            # ── Update ────────────────────────────────────────────────────────
-            if self.state == STATE_LOADING:
-                self.loading.update()
-                if self.loading.done:
-                    self.state = STATE_MENU
-                    self.menu = MainMenu(self.screen)
+                elif self.state == "END":
+                    result = self.end_screen.handle_event(event)
+                    if result == "restart":
+                        self.init_game()
+                        self.state = "CSP"
+                    elif result == "menu":
+                        self.state = "MENU"
 
-            elif self.state == STATE_MENU:
-                self.menu.update()
+            if self.state == "MENU":
+                self.menu.draw()
 
-            elif self.state == STATE_CSP_VIZ:
-                self._update_csp_anim()
+            elif self.state == "HOWTOPLAY":
+                self.how_to_play.draw()
 
-            elif self.state == STATE_PLAYING and not self.paused:
+            elif self.state == "SETTINGS":
+                self.settings.draw()
+
+            elif self.state == "CSP":
+                self.screen.fill((34, 139, 34))
+                self.grid.draw(self.screen, self.game_tick, None, 0)
+                if self.farm_ui:
+                    self.farm_ui.draw(self.screen)
+                self.csp_popup.draw()
+
+            elif self.state == "PLAYING":
                 self.season.update(self.grid)
+                if self.check_end_condition():
+                    self.end_screen = EndScreen(
+                        self.screen,
+                        self.farmer.score,
+                        self.guard.score,
+                        self.animal.score,
+                    )
+                    self.state = "END"
+
                 for agent in self.agents:
                     agent.update(self.grid, self.agents)
-                # Respawn animal if caught
                 if not self.animal.alive:
                     self.animal.respawn(16, 1)
                 self.game_tick += 1
 
-            # ── Draw ──────────────────────────────────────────────────────────
-            if self.state == STATE_LOADING:
-                self.loading.draw()
+                self.screen.fill((34, 139, 34))
+                self.grid.draw(self.screen, self.game_tick, None, self.season.index)
+                if self.farm_ui:
+                    self.farm_ui.draw(self.screen)
+                self.draw_season_info()
+                self.draw_minimap()
+                for agent in self.agents:
+                    if hasattr(agent, "alive") and not agent.alive:
+                        continue
+                    agent.draw(self.screen)
 
-            elif self.state == STATE_MENU:
-                self.menu.draw()
+            elif self.state == "PAUSED":
+                self.screen.fill((34, 139, 34))
+                self.grid.draw(self.screen, self.game_tick, None, self.season.index)
+                if self.farm_ui:
+                    self.farm_ui.draw(self.screen)
+                self.draw_season_info()
+                self.draw_minimap()
+                for agent in self.agents:
+                    if hasattr(agent, "alive") and not agent.alive:
+                        continue
+                    agent.draw(self.screen)
+                self.draw_pause_screen()
 
-            elif self.state == STATE_CSP_VIZ:
-                self._draw_csp_anim()
-
-            elif self.state == STATE_PLAYING:
-                self._draw_game()
+            elif self.state == "END":
+                self.end_screen.draw()
 
             pygame.display.flip()
 
-    # ── CSP animation ─────────────────────────────────────────────────────────
-
-    def _update_csp_anim(self):
-        self.csp_tick += 1
-
-        # Show each assignment step by step
-        steps_per_frame = 2
-
-        for _ in range(steps_per_frame):
-            if self.csp_log_idx < len(self.csp_solver.log):
-                entry = self.csp_solver.log[self.csp_log_idx]
-                c, r, crop, action = entry
-                if action in ("assign", "final"):
-                    self.csp_assignment[(c, r)] = crop
-                self.csp_log_idx += 1
-            else:
-                # Finished all CSP steps
-                self._finish_csp()
-                return
-
-    def _finish_csp(self):
-        self.csp_solver.apply_to_grid()
-        self.state = STATE_PLAYING
-
-    def _draw_csp_anim(self):
-        self.screen.fill(C_BG_DARK)
-        self.grid.draw(self.screen)
-
-        # Current log entry
-        entry = None
-        if self.csp_log_idx > 0 and self.csp_log_idx <= len(self.csp_solver.log):
-            entry = self.csp_solver.log[self.csp_log_idx - 1]
-
-        self.csp_panel.draw(entry, self.csp_solver.vars, self.csp_assignment)
-
-        from utils.helpers import draw_text
-
-        f = FontCache.get(FONT_SMALL)
-        draw_text(
-            self.screen,
-            "SPACE — skip to gameplay",
-            f,
-            C_TEXT_DIM,
-            SCREEN_W // 2,
-            SCREEN_H - 20,
-            "center",
-        )
-
-    # ── Game draw ─────────────────────────────────────────────────────────────
-
-    def _draw_game(self):
-        self.screen.fill(C_BG_DARK)
-
-        # Grid area
-<<<<<<< HEAD
-        self.grid.draw(self.screen)
-        self.grid.draw_buildings(self.screen)
-=======
-        self.grid.draw(self.screen, self.game_tick)
->>>>>>> 71ac12da3034dc364f94bfd40f541070ad2ac954
-
-        # Path overlays
-        self.farmer.draw_path_overlay(self.screen, C_PATH_FARMER)
-        self.guard.draw_path_overlay(self.screen, C_PATH_GUARD)
-        if self.animal.alive:
-            self.animal.draw_path_overlay(self.screen, C_PATH_ANIMAL)
-
-        # Agents
-        f_tiny = FontCache.get(FONT_TINY)
-        for ag in self.agents:
-            if hasattr(ag, "alive") and not ag.alive:
-                continue
-            ag.draw(self.screen, f_tiny)
-
-        # UI chrome
-        self.ui.draw_hud(self.season, self.agents, self.paused, self.game_tick)
-        self.ui.draw_sidebar(self.grid, self.season, self.agents)
-        self.metrics_panel.draw(self.grid, self.agents)
-
-        # Seasonal atmosphere
-        season_tints = {
-            "🌱 Spring": (20, 40, 20, 30),
-            "☀️ Summer": (40, 20, 0, 40),
-            "🍂 Autumn": (40, 20, 0, 40),
-            "❄️ Winter": (0, 20, 40, 30),
-        }
-        if self.season.name in season_tints:
-            tint = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-            tint.fill(season_tints[self.season.name])
-            self.screen.blit(tint, (0, 0))
-
-        # Weather overlay
-        if self.season.rain_active:
-            rain_overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-            rain_overlay.fill((100, 120, 150, 20))
-            # Rain particles
-            for i in range(30):
-                rx = (self.game_tick * 3 + i * 25) % SCREEN_W
-                ry = (self.game_tick * 5 + i * 15) % (SCREEN_H + 20)
-                pygame.draw.line(rain_overlay, (150, 170, 200, 150), (rx, ry), (rx + 8, ry + 16), 1)
-            self.screen.blit(rain_overlay, (0, 0))
-
-        if self.paused:
-            overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-            overlay.fill((0, 0, 0, 90))
-            self.screen.blit(overlay, (0, 0))
-            from utils.helpers import draw_text
-
-            f = FontCache.get(FONT_HUGE)
-            draw_text(
-                self.screen,
-                "PAUSED",
-                f,
-                C_TEXT_GOLD,
-                SCREEN_W // 2,
-                SCREEN_H // 2,
-                "center",
-            )
+        pygame.quit()
+        sys.exit()
 
 
 if __name__ == "__main__":

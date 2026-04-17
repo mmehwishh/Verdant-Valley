@@ -14,15 +14,38 @@ import base64
 import pygame
 from io import BytesIO
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+sys.path.insert(
+    0,
+    os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    ),
+)
 
 from utils.constants import (
-    TILE_GRASS, TILE_DIRT, TILE_STONE, TILE_MUD, TILE_WATER, TILE_FIELD,
-    TILE_COLOR, TILE_HIGHLIGHT, TILE_SHADOW, TILE_COST, TILE_RADIUS,
-    TILE_SIZE, GRID_COLS, GRID_ROWS, GRID_OFFSET_X, GRID_OFFSET_Y,
-    CROP_NONE, CROP_WHEAT, CROP_SUNFLOWER, CROP_CORN,
-    CROP_COLOR, CROP_GLOW_COLOR,
-    C_TILE_HOVER_BORDER, C_TILE_HOVER_FILL,
+    TILE_GRASS,
+    TILE_DIRT,
+    TILE_STONE,
+    TILE_MUD,
+    TILE_WATER,
+    TILE_FIELD,
+    TILE_COLOR,
+    TILE_HIGHLIGHT,
+    TILE_SHADOW,
+    TILE_COST,
+    TILE_RADIUS,
+    TILE_SIZE,
+    GRID_COLS,
+    GRID_ROWS,
+    GRID_OFFSET_X,
+    GRID_OFFSET_Y,
+    CROP_NONE,
+    CROP_WHEAT,
+    CROP_SUNFLOWER,
+    CROP_CORN,
+    CROP_COLOR,
+    CROP_GLOW_COLOR,
+    C_TILE_HOVER_BORDER,
+    C_TILE_HOVER_FILL,
     SEASON_TINTS,
 )
 from utils.helpers import grid_to_px, draw_rounded_rect
@@ -143,6 +166,7 @@ def _stylize_stone_asset(surface):
 
 # ── Baked texture data per tile ───────────────────────────────────────────────
 
+
 def _bake_grass(col, row):
     """Return list of (x_off, y_off, height) for grass blades — deterministic."""
     rng = random.Random(col * 1000 + row * 37 + 3)
@@ -160,7 +184,9 @@ def _bake_grass(col, row):
 
 def _bake_dirt(col, row):
     rng = random.Random(col * 999 + row * 53 + 7)
-    dots = [(rng.randint(3, TILE_SIZE - 3), rng.randint(3, TILE_SIZE - 3)) for _ in range(5)]
+    dots = [
+        (rng.randint(3, TILE_SIZE - 3), rng.randint(3, TILE_SIZE - 3)) for _ in range(5)
+    ]
     return {"dots": dots}
 
 
@@ -177,14 +203,16 @@ def _bake_stone(col, row):
         # Shadow direction: bottom-right (1, 1)
         shadow_offset = (sr // 2, sr // 2)
         color_var = rng.randint(-8, 8)  # slight color variation
-        pebbles.append({
-            "x": sx,
-            "y": sy,
-            "r": sr,
-            "highlight_offset": highlight_offset,
-            "shadow_offset": shadow_offset,
-            "color_var": color_var
-        })
+        pebbles.append(
+            {
+                "x": sx,
+                "y": sy,
+                "r": sr,
+                "highlight_offset": highlight_offset,
+                "shadow_offset": shadow_offset,
+                "color_var": color_var,
+            }
+        )
     return {"pebbles": pebbles}
 
 
@@ -200,7 +228,9 @@ def _bake_mud(col, row):
 def _bake_field(col, row):
     """Horizontal furrow lines + small clod dots."""
     rng = random.Random(col * 555 + row * 61 + 23)
-    clods = [(rng.randint(8, TILE_SIZE - 8), rng.randint(8, TILE_SIZE - 8)) for _ in range(3)]
+    clods = [
+        (rng.randint(8, TILE_SIZE - 8), rng.randint(8, TILE_SIZE - 8)) for _ in range(3)
+    ]
     return {"clods": clods}
 
 
@@ -213,9 +243,9 @@ def _bake_water(col, row):
 
 BAKE_FN = {
     TILE_GRASS: _bake_grass,
-    TILE_DIRT:  _bake_dirt,
+    TILE_DIRT: _bake_dirt,
     TILE_STONE: _bake_stone,
-    TILE_MUD:   _bake_mud,
+    TILE_MUD: _bake_mud,
     TILE_FIELD: _bake_field,
     TILE_WATER: _bake_water,
 }
@@ -223,13 +253,14 @@ BAKE_FN = {
 
 # ── Tile ──────────────────────────────────────────────────────────────────────
 
+
 class Tile:
     def __init__(self, col, row, tile_type=TILE_GRASS):
         self.col = col
         self.row = row
         self.type = tile_type
         self.crop = CROP_NONE
-        self.crop_stage = 0   # 0-3
+        self.crop_stage = 0  # 0-3
         self.wet = False
         self._texture = None  # baked texture data dict
 
@@ -259,6 +290,7 @@ class Tile:
 
 # ── Grid ──────────────────────────────────────────────────────────────────────
 
+
 class Grid:
     def __init__(self):
         self.cols = GRID_COLS
@@ -284,7 +316,7 @@ class Grid:
         """Load the house sprite from assets"""
         try:
             self.house_sprite = pygame.image.load(
-                "assets/images/buildings/house.png"
+                "assets/farm/house.png"
             ).convert_alpha()
             # Scale to appropriate size (96x96 for 2x2 tiles)
             self.house_sprite = pygame.transform.scale(self.house_sprite, (96, 96))
@@ -324,47 +356,43 @@ class Grid:
     # ── Map generation ────────────────────────────────────────────────────────
 
     def _build_map(self):
-        # Field zone
-        for c in range(4, 14):
-            for r in range(2, 12):
-                if c < self.cols and r < self.rows:
-                    self.tiles[c][r].type = TILE_FIELD
+        """Generate random terrain layout (water fixed at col 0-1, everything else random)"""
 
-        # River
+        # FIRST: Water - ALWAYS FIXED at columns 0-1
         for r in range(self.rows):
             if 0 < self.cols:
                 self.tiles[0][r].type = TILE_WATER
             if 1 < self.cols:
                 self.tiles[1][r].type = TILE_WATER
 
-        # Stone path — bottom two rows
+        # SECOND: Random terrain for all other tiles
+        for c in range(self.cols):
+            for r in range(self.rows):
+                # Skip water columns (0 and 1)
+                if c <= 1:
+                    continue
+
+                # Random number between 0 and 1
+                rand = random.random()
+
+                # Assign random tile types with probabilities
+                if rand < 0.35:  # 35% Grass
+                    self.tiles[c][r].type = TILE_GRASS
+                elif rand < 0.55:  # 20% Dirt
+                    self.tiles[c][r].type = TILE_DIRT
+                elif rand < 0.70:  # 15% Field
+                    self.tiles[c][r].type = TILE_FIELD
+                elif rand < 0.82:  # 12% Stone
+                    self.tiles[c][r].type = TILE_STONE
+                else:  # 18% Mud
+                    self.tiles[c][r].type = TILE_MUD
+
+        # THIRD: Stone path at bottom (fixed)
         for c in range(2, self.cols):
             if 12 < self.rows:
                 self.tiles[c][12].type = TILE_STONE
             if 13 < self.rows:
                 self.tiles[c][13].type = TILE_STONE
-
-        # Mud patches
-        for c, r in [(3,4),(3,5),(3,6),(14,3),(14,4),(14,8),(14,9),(15,5)]:
-            if 0 <= c < self.cols and 0 <= r < self.rows:
-                self.tiles[c][r].type = TILE_MUD
-
-        # Dirt border
-        for r in range(1, 13):
-            if 2 < self.cols and r < self.rows:
-                self.tiles[2][r].type = TILE_DIRT
-            if 3 < self.cols and r < self.rows:
-                self.tiles[3][r].type = TILE_DIRT
-        for c in range(4, 16):
-            if c < self.cols and 1 < self.rows:
-                self.tiles[c][1].type = TILE_DIRT
-
-        # Random stones in field (seeded so they're the same every run)
-        rng = random.Random(42)
-        for _ in range(8):
-            c = rng.randint(4, min(13, self.cols - 1))
-            r = rng.randint(2, min(11, self.rows - 1))
-            self.tiles[c][r].type = TILE_STONE
 
     def _bake_all(self):
         """Pre-compute texture data for every tile."""
@@ -380,16 +408,28 @@ class Grid:
         return None
 
     def water_sources(self):
-        return [(c, r) for c in range(self.cols) for r in range(self.rows)
-                if self.tiles[c][r].type == TILE_WATER]
+        return [
+            (c, r)
+            for c in range(self.cols)
+            for r in range(self.rows)
+            if self.tiles[c][r].type == TILE_WATER
+        ]
 
     def field_tiles(self):
-        return [(c, r) for c in range(self.cols) for r in range(self.rows)
-                if self.tiles[c][r].type == TILE_FIELD]
+        return [
+            (c, r)
+            for c in range(self.cols)
+            for r in range(self.rows)
+            if self.tiles[c][r].type == TILE_FIELD
+        ]
 
     def crop_tiles(self):
-        return [(c, r) for c in range(self.cols) for r in range(self.rows)
-                if self.tiles[c][r].crop != CROP_NONE]
+        return [
+            (c, r)
+            for c in range(self.cols)
+            for r in range(self.rows)
+            if self.tiles[c][r].crop != CROP_NONE
+        ]
 
     # ── Rain event ────────────────────────────────────────────────────────────
 
@@ -399,7 +439,7 @@ class Grid:
             for r in range(self.rows):
                 t = self.tiles[c][r]
                 if t.type == TILE_MUD:
-                    for dc, dr in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    for dc, dr in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                         n = self.get(c + dc, r + dr)
                         if n and n.type in (TILE_DIRT, TILE_GRASS):
                             new_mud.append((c + dc, r + dr))
@@ -433,13 +473,23 @@ class Grid:
             self.rows * TILE_SIZE + 20,
         )
         draw_rounded_rect(surface, (20, 28, 18, 230), plot_rect, radius=20)
-        draw_rounded_rect(surface, (255, 255, 255, 40), plot_rect, radius=20,
-                          border=2, border_color=(90, 120, 90))
+        draw_rounded_rect(
+            surface,
+            (255, 255, 255, 40),
+            plot_rect,
+            radius=20,
+            border=2,
+            border_color=(90, 120, 90),
+        )
 
         # Soft panel shadow
         shadow_rect = plot_rect.inflate(12, 12)
-        shadow_surf = pygame.Surface((shadow_rect.width, shadow_rect.height), pygame.SRCALPHA)
-        pygame.draw.rect(shadow_surf, (0, 0, 0, 40), shadow_surf.get_rect(), border_radius=24)
+        shadow_surf = pygame.Surface(
+            (shadow_rect.width, shadow_rect.height), pygame.SRCALPHA
+        )
+        pygame.draw.rect(
+            shadow_surf, (0, 0, 0, 40), shadow_surf.get_rect(), border_radius=24
+        )
         surface.blit(shadow_surf, (shadow_rect.x, shadow_rect.y))
 
         # ── Draw tiles ────────────────────────────────────────────────────────
@@ -452,12 +502,20 @@ class Grid:
             hc, hr = self.hovered
             hx, hy = grid_to_px(hc, hr)
             hover_surf = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
-            pygame.draw.rect(hover_surf, C_TILE_HOVER_FILL,
-                             hover_surf.get_rect(), border_radius=TILE_RADIUS)
+            pygame.draw.rect(
+                hover_surf,
+                C_TILE_HOVER_FILL,
+                hover_surf.get_rect(),
+                border_radius=TILE_RADIUS,
+            )
             surface.blit(hover_surf, (hx, hy))
-            pygame.draw.rect(surface, C_TILE_HOVER_BORDER,
-                             pygame.Rect(hx, hy, TILE_SIZE, TILE_SIZE),
-                             width=2, border_radius=TILE_RADIUS)
+            pygame.draw.rect(
+                surface,
+                C_TILE_HOVER_BORDER,
+                pygame.Rect(hx, hy, TILE_SIZE, TILE_SIZE),
+                width=2,
+                border_radius=TILE_RADIUS,
+            )
 
         # ── Season tint overlay ───────────────────────────────────────────────
         self._draw_season_tint(surface, season_index)
@@ -469,13 +527,13 @@ class Grid:
         tx = t.texture
 
         base = TILE_COLOR[t.type]
-        hi   = TILE_HIGHLIGHT[t.type]
-        sh   = TILE_SHADOW[t.type]
+        hi = TILE_HIGHLIGHT[t.type]
+        sh = TILE_SHADOW[t.type]
 
         # Darken when wet
         if t.wet and t.type != TILE_WATER:
             base = tuple(max(0, v - 22) for v in base)
-            hi   = tuple(max(0, v - 22) for v in hi)
+            hi = tuple(max(0, v - 22) for v in hi)
 
         tile_rect = pygame.Rect(x, y, TILE_SIZE, TILE_SIZE)
 
@@ -485,8 +543,9 @@ class Grid:
         # ── Top-face highlight strip (baked, not random) ──────────────────────
         hi_surf = pygame.Surface((TILE_SIZE, 10), pygame.SRCALPHA)
         hi_surf.fill((0, 0, 0, 0))
-        pygame.draw.rect(hi_surf, (*hi, 100), hi_surf.get_rect(),
-                         border_radius=TILE_RADIUS)
+        pygame.draw.rect(
+            hi_surf, (*hi, 100), hi_surf.get_rect(), border_radius=TILE_RADIUS
+        )
         surface.blit(hi_surf, (x, y))
 
         # ── Bottom shadow strip ────────────────────────────────────────────────
@@ -498,8 +557,9 @@ class Grid:
         # ── Type-specific textures (all baked, no random calls here) ──────────
         if t.type == TILE_GRASS:
             for bx, by, bh in tx.get("blades", []):
-                pygame.draw.line(surface, (44, 155, 44),
-                                 (x + bx, y + by), (x + bx, y + by - bh), 1)
+                pygame.draw.line(
+                    surface, (44, 155, 44), (x + bx, y + by), (x + bx, y + by - bh), 1
+                )
             px, py = tx.get("pebble", (10, 12))
             pygame.draw.circle(surface, (200, 200, 165), (x + px, y + py), 2)
 
@@ -511,7 +571,9 @@ class Grid:
                     surface,
                     (50, 130, 210),
                     (x + i, y + 9 + wave, 12, 8),
-                    math.pi, 2 * math.pi, 2,
+                    math.pi,
+                    2 * math.pi,
+                    2,
                 )
             # Shimmer dot
             shimmer_alpha = int(80 + 60 * math.sin(tick * 0.13 + t.col))
@@ -522,9 +584,13 @@ class Grid:
         elif t.type == TILE_FIELD:
             # Furrow lines (fixed positions)
             for line_y_off in range(7, TILE_SIZE, 8):
-                pygame.draw.line(surface, (90, 52, 16),
-                                 (x + 5, y + line_y_off),
-                                 (x + TILE_SIZE - 5, y + line_y_off), 2)
+                pygame.draw.line(
+                    surface,
+                    (90, 52, 16),
+                    (x + 5, y + line_y_off),
+                    (x + TILE_SIZE - 5, y + line_y_off),
+                    2,
+                )
             for cx, cy in tx.get("clods", []):
                 pygame.draw.circle(surface, (98, 46, 12), (x + cx, y + cy), 2)
 
@@ -533,6 +599,7 @@ class Grid:
                 pygame.draw.circle(surface, (100, 52, 18), (x + dx, y + dy), 1)
 
         elif t.type == TILE_STONE:
+<<<<<<< Updated upstream
             stone_asset = _get_stone_asset()
             if stone_asset:
                 surface.blit(stone_asset, (x, y))
@@ -585,34 +652,103 @@ class Grid:
                     # Micro-shine dot on highlight
                     pygame.draw.circle(surface, (255, 255, 255),
                                      (x + sx + h_off[0], y + sy + h_off[1]), max(1, h_size - 1))
+=======
+            for pebble in tx.get("pebbles", []):
+                sx = pebble["x"]
+                sy = pebble["y"]
+                sr = pebble["r"]
+                h_off = pebble["highlight_offset"]
+                s_off = pebble["shadow_offset"]
+                c_var = pebble["color_var"]
+
+                # Base stone color with variation
+                base = TILE_COLOR[TILE_STONE]
+                stone_color = (
+                    max(40, min(200, base[0] + c_var)),
+                    max(40, min(200, base[1] + c_var)),
+                    max(40, min(200, base[2] + c_var)),
+                )
+
+                # Deep shadow (darkest inner ring)
+                shadow_color = (
+                    max(40, stone_color[0] - 30),
+                    max(40, stone_color[1] - 30),
+                    max(40, stone_color[2] - 30),
+                )
+                pygame.draw.circle(
+                    surface,
+                    shadow_color,
+                    (x + sx + s_off[0], y + sy + s_off[1]),
+                    sr + 1,
+                )
+
+                # Main stone body
+                pygame.draw.circle(surface, stone_color, (x + sx, y + sy), sr)
+
+                # Subtle mid-tone ring for depth
+                mid_color = (
+                    (stone_color[0] + shadow_color[0]) // 2,
+                    (stone_color[1] + shadow_color[1]) // 2,
+                    (stone_color[2] + shadow_color[2]) // 2,
+                )
+                pygame.draw.circle(surface, mid_color, (x + sx, y + sy), sr, 1)
+
+                # Top highlight (bright edge)
+                highlight_color = (
+                    min(255, stone_color[0] + 40),
+                    min(255, stone_color[1] + 40),
+                    min(255, stone_color[2] + 40),
+                )
+                h_size = max(1, sr // 3)
+                pygame.draw.circle(
+                    surface,
+                    highlight_color,
+                    (x + sx + h_off[0], y + sy + h_off[1]),
+                    h_size,
+                )
+
+                # Micro-shine dot on highlight
+                pygame.draw.circle(
+                    surface,
+                    (255, 255, 255),
+                    (x + sx + h_off[0], y + sy + h_off[1]),
+                    max(1, h_size - 1),
+                )
+>>>>>>> Stashed changes
 
         elif t.type == TILE_MUD:
             for streak_x in tx.get("streaks", []):
-                pygame.draw.line(surface, (88, 54, 26),
-                                 (x + streak_x, y + 8),
-                                 (x + streak_x + 4, y + 14), 1)
+                pygame.draw.line(
+                    surface,
+                    (88, 54, 26),
+                    (x + streak_x, y + 8),
+                    (x + streak_x + 4, y + 14),
+                    1,
+                )
 
         # ── Water edge blending ────────────────────────────────────────────────
         if t.type == TILE_WATER:
             for dc, dr, rx, ry, rw, rh in [
-                (-1, 0,  0,           0, 6, TILE_SIZE),
-                ( 1, 0,  TILE_SIZE-6, 0, 6, TILE_SIZE),
-                ( 0,-1,  0,           0, TILE_SIZE, 6),
-                ( 0, 1,  0, TILE_SIZE-6, TILE_SIZE, 6),
+                (-1, 0, 0, 0, 6, TILE_SIZE),
+                (1, 0, TILE_SIZE - 6, 0, 6, TILE_SIZE),
+                (0, -1, 0, 0, TILE_SIZE, 6),
+                (0, 1, 0, TILE_SIZE - 6, TILE_SIZE, 6),
             ]:
                 n = self.get(t.col + dc, t.row + dr)
                 if n and n.type != TILE_WATER:
                     es = pygame.Surface((rw, rh), pygame.SRCALPHA)
-                    pygame.draw.rect(es, (60, 150, 220, 70), es.get_rect(), border_radius=3)
+                    pygame.draw.rect(
+                        es, (60, 150, 220, 70), es.get_rect(), border_radius=3
+                    )
                     surface.blit(es, (x + rx, y + ry))
 
         # ── Field edge blending ────────────────────────────────────────────────
         if t.type == TILE_FIELD:
             for dc, dr, rx, ry, rw, rh in [
-                (-1, 0,  0,           0, 4, TILE_SIZE),
-                ( 1, 0,  TILE_SIZE-4, 0, 4, TILE_SIZE),
-                ( 0,-1,  0,           0, TILE_SIZE, 4),
-                ( 0, 1,  0, TILE_SIZE-4, TILE_SIZE, 4),
+                (-1, 0, 0, 0, 4, TILE_SIZE),
+                (1, 0, TILE_SIZE - 4, 0, 4, TILE_SIZE),
+                (0, -1, 0, 0, TILE_SIZE, 4),
+                (0, 1, 0, TILE_SIZE - 4, TILE_SIZE, 4),
             ]:
                 n = self.get(t.col + dc, t.row + dr)
                 if n and n.type in (TILE_DIRT, TILE_GRASS):
@@ -625,8 +761,9 @@ class Grid:
             self._draw_crop(surface, t, x, y, tick)
 
         # ── Tile border (subtle) ──────────────────────────────────────────────
-        pygame.draw.rect(surface, (0, 0, 0, 55), tile_rect, 1,
-                         border_radius=TILE_RADIUS)
+        pygame.draw.rect(
+            surface, (0, 0, 0, 55), tile_rect, 1, border_radius=TILE_RADIUS
+        )
 
     # ── Crop drawing ──────────────────────────────────────────────────────────
 
@@ -652,8 +789,12 @@ class Grid:
             stem_top = (cx, cy - 12)
             pygame.draw.line(surface, (75, 148, 42), (cx, cy + 6), stem_top, 3)
             pygame.draw.circle(surface, cc, stem_top, 5)
-            pygame.draw.circle(surface, tuple(min(255, v + 50) for v in cc),
-                               (stem_top[0] - 1, stem_top[1] - 1), 2)
+            pygame.draw.circle(
+                surface,
+                tuple(min(255, v + 50) for v in cc),
+                (stem_top[0] - 1, stem_top[1] - 1),
+                2,
+            )
 
         else:
             # Stage 3 — fully grown, type-specific
@@ -665,7 +806,9 @@ class Grid:
         # Glow shadow ellipse under every mature crop
         if t.crop in CROP_GLOW_COLOR:
             glow_surf = pygame.Surface((TILE_SIZE, 10), pygame.SRCALPHA)
-            pygame.draw.ellipse(glow_surf, CROP_GLOW_COLOR[t.crop], glow_surf.get_rect())
+            pygame.draw.ellipse(
+                glow_surf, CROP_GLOW_COLOR[t.crop], glow_surf.get_rect()
+            )
             surface.blit(glow_surf, (x, y + TILE_SIZE - 12))
 
         if t.crop == CROP_WHEAT:
@@ -677,13 +820,16 @@ class Grid:
                 pygame.draw.line(surface, (165, 128, 40), (sx, sy_bot), (sx, sy_top), 3)
                 # Wheat head (oval)
                 pygame.draw.ellipse(surface, cc, (sx - 4, sy_top - 6, 8, 10))
-                pygame.draw.ellipse(surface, (255, 220, 90),
-                                    (sx - 3, sy_top - 5, 5, 6))
+                pygame.draw.ellipse(surface, (255, 220, 90), (sx - 3, sy_top - 5, 5, 6))
                 # Awns
                 for j in range(-1, 2):
-                    pygame.draw.line(surface, cc,
-                                     (sx, sy_top - 3 + j * 3),
-                                     (sx + 6, sy_top - 5 + j * 3), 1)
+                    pygame.draw.line(
+                        surface,
+                        cc,
+                        (sx, sy_top - 3 + j * 3),
+                        (sx + 6, sy_top - 5 + j * 3),
+                        1,
+                    )
 
         elif t.crop == CROP_SUNFLOWER:
             stem_top = (cx, cy - 14)
@@ -702,18 +848,20 @@ class Grid:
             stem_top = (cx, cy - 16)
             pygame.draw.line(surface, (65, 128, 35), (cx, cy + 8), stem_top, 4)
             # Two leaves
-            pygame.draw.line(surface, (90, 165, 50),
-                             (cx, cy), (cx - 10, cy - 8), 2)
-            pygame.draw.line(surface, (90, 165, 50),
-                             (cx, cy - 6), (cx + 10, cy - 14), 2)
+            pygame.draw.line(surface, (90, 165, 50), (cx, cy), (cx - 10, cy - 8), 2)
+            pygame.draw.line(
+                surface, (90, 165, 50), (cx, cy - 6), (cx + 10, cy - 14), 2
+            )
             # Cob
-            pygame.draw.rect(surface, (200, 165, 50),
-                             (cx - 5, cy - 14, 10, 18), border_radius=4)
+            pygame.draw.rect(
+                surface, (200, 165, 50), (cx - 5, cy - 14, 10, 18), border_radius=4
+            )
             # Corn kernel rows (dots)
             for kr in range(3):
                 for kc in range(2):
-                    pygame.draw.circle(surface, (230, 200, 80),
-                                       (cx - 3 + kc * 6, cy - 11 + kr * 5), 2)
+                    pygame.draw.circle(
+                        surface, (230, 200, 80), (cx - 3 + kc * 6, cy - 11 + kr * 5), 2
+                    )
 
         # Shimmer sparkle on all mature crops (tick-driven, not random)
         shimmer_alpha = int(20 + 18 * math.sin(tick * 0.18 + t.col * 0.5))
@@ -734,5 +882,11 @@ class Grid:
             tint = pygame.Surface((grid_w, grid_h), pygame.SRCALPHA)
             tint.fill(tint_color)
             self._tint_surf_cache[season_index] = tint
+<<<<<<< Updated upstream
         surface.blit(self._tint_surf_cache[season_index],
                      (GRID_OFFSET_X, GRID_OFFSET_Y))
+=======
+        surface.blit(
+            self._tint_surf_cache[season_index], (GRID_OFFSET_X, GRID_OFFSET_Y)
+        )
+>>>>>>> Stashed changes
