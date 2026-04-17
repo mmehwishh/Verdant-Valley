@@ -527,6 +527,8 @@ class Game:
         self.game_tick = 0
         self.completed_seasons = 0
         self.plant_button_rect = None
+        self.rain_button_rect = None
+        self.change_season_button_rect = None
 
         self.music_manager = MusicManager()
         if self.music_manager.load_music("assets/loading/audio.mp3"):
@@ -544,7 +546,8 @@ class Game:
         self.farm_ui = None
         self.farmer = None
         self.guard = None
-        self.animal = None
+        self.animal_bear = None
+        self.animal_rabbit = None
         self.agents = []
         self.last_season_index = 0
 
@@ -556,6 +559,7 @@ class Game:
     def init_game(self):
         self.grid = Grid()
         self.season = SeasonManager()
+        self.season.apply_current_effects(self.grid)
         self.completed_seasons = 0
         self.last_season_index = self.season.index
 
@@ -568,11 +572,28 @@ class Game:
 
         self.farmer = Farmer(6, 6)
         self.guard = Guard(10, 10)
-        self.animal = Animal(16, 1)
+        self.guard.ensure_valid_position(self.grid)
+        self.animal_bear = Animal(16, 1, animal_type="bear")
+        self.animal_bear.respawn(*self._random_spawn(self.grid), self.grid)
+        self.animal_rabbit = Animal(14, 3, animal_type="rabbit")
+        self.animal_rabbit.respawn(*self._random_spawn(self.grid), self.grid)
         self.guard.set_waypoints([(4, 2), (13, 2), (13, 11), (4, 11)])
-        self.agents = [self.farmer, self.guard, self.animal]
+        self.agents = [self.farmer, self.guard, self.animal_bear, self.animal_rabbit]
 
         self.game_tick = 0
+
+    @staticmethod
+    def _random_spawn(grid):
+        """Pick a random valid (non-water, non-stone) spawn tile."""
+        candidates = []
+        for c in range(2, grid.cols):
+            for r in range(grid.rows):
+                t = grid.get(c, r)
+                if t and t.type not in (TILE_WATER, TILE_STONE):
+                    candidates.append((c, r))
+        if candidates:
+            return random.choice(candidates)
+        return (6, 6)
 
     def check_end_condition(self):
         if self.season.index < self.last_season_index:
@@ -647,8 +668,8 @@ class Game:
             pygame.draw.circle(self.screen, color, (dot_x, dot_y), 4)
 
     def draw_season_info(self):
-        panel_w = 180
-        panel_h = 65
+        panel_w = 210
+        panel_h = 110
         panel_x = 15
         panel_y = 15
 
@@ -671,9 +692,91 @@ class Game:
         )
         self.screen.blit(season_text, (panel_x + 12, panel_y + 10))
 
-        day = (self.game_tick // 600) + 1
+        day = self.season.day_count if self.season else (self.game_tick // 600) + 1
         day_text = self.font_small.render(f"Day: {day}", True, (220, 220, 220))
         self.screen.blit(day_text, (panel_x + 12, panel_y + 38))
+
+        tod_color = (160, 200, 255) if self.season and self.season.is_night else (255, 230, 140)
+        tod = self.season.time_of_day if self.season else "Day"
+        tod_text = self.font_small.render(f"Time: {tod}", True, tod_color)
+        self.screen.blit(tod_text, (panel_x + 12, panel_y + 56))
+
+        money = self.farmer.score if self.farmer else 0
+        money_text = self.font_small.render(
+            f"Money: {money}", True, (100, 220, 140)
+        )
+        self.screen.blit(money_text, (panel_x + 12, panel_y + 76))
+
+    def draw_change_season_button(self, enabled=True):
+        """Draw manual season switch button in top-right corner."""
+        btn_width = 190
+        btn_height = 40
+        btn_x = SCREEN_W - btn_width - 20
+        btn_y = 18
+        self.change_season_button_rect = pygame.Rect(btn_x, btn_y, btn_width, btn_height)
+
+        mouse_pos = pygame.mouse.get_pos()
+        is_hover = enabled and self.change_season_button_rect.collidepoint(mouse_pos)
+
+        if enabled:
+            wood_base = (100, 70, 40)
+            wood_light = (140, 105, 65)
+            border = (80, 150, 80)
+            text_color = (255, 215, 0)
+            btn_color = wood_light if is_hover else wood_base
+        else:
+            btn_color = (80, 80, 80)
+            border = (110, 110, 110)
+            text_color = (170, 170, 170)
+
+        pygame.draw.rect(
+            self.screen, btn_color, self.change_season_button_rect, border_radius=12
+        )
+        pygame.draw.rect(
+            self.screen, border, self.change_season_button_rect, 2, border_radius=12
+        )
+
+        for i in range(2):
+            line_y = btn_y + 12 + i * 14
+            pygame.draw.line(
+                self.screen,
+                (80, 55, 30),
+                (btn_x + 10, line_y),
+                (btn_x + btn_width - 10, line_y),
+                1,
+            )
+
+        btn_font = pygame.font.Font(None, 22)
+        btn_text = btn_font.render("🔁 CHANGE SEASON", True, text_color)
+        text_rect = btn_text.get_rect(center=self.change_season_button_rect.center)
+        self.screen.blit(btn_text, text_rect)
+
+    def draw_day_night_overlay(self):
+        if not self.season:
+            return
+        if self.season.night_alpha <= 0:
+            return
+
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((18, 24, 50, self.season.night_alpha))
+        self.screen.blit(overlay, (0, 0))
+
+    def draw_season_fullscreen_overlay(self):
+        """Apply season tint to the full scene (grid + house + decorations + agents)."""
+        if not self.season:
+            return
+
+        tint_color = SEASON_TINTS.get(self.season.index % len(SEASON_TINTS))
+        if not tint_color:
+            return
+
+        r, g, b, base_alpha = tint_color
+        pulse = int(self.season.bloom * 8)
+        alpha = max(0, min(80, base_alpha + pulse))
+
+        overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+        overlay.fill((r, g, b, alpha))
+        self.screen.blit(overlay, (0, 0))
 
     def draw_pause_screen(self):
         overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
@@ -731,6 +834,42 @@ class Game:
         text_rect = btn_text.get_rect(center=self.plant_button_rect.center)
         self.screen.blit(btn_text, text_rect)
 
+    def draw_rain_button(self):
+        """Draw the rain button below the plant button"""
+        btn_width = 140
+        btn_height = 45
+        btn_x = SCREEN_W - SIDEBAR_W + 20
+        btn_y = 375
+        self.rain_button_rect = pygame.Rect(btn_x, btn_y, btn_width, btn_height)
+
+        wood_base = (60, 80, 110)
+        wood_light = (80, 105, 140)
+        mouse_pos = pygame.mouse.get_pos()
+        is_hover = self.rain_button_rect.collidepoint(mouse_pos)
+        btn_color = wood_light if is_hover else wood_base
+
+        pygame.draw.rect(
+            self.screen, btn_color, self.rain_button_rect, border_radius=12
+        )
+        pygame.draw.rect(
+            self.screen, (80, 120, 180), self.rain_button_rect, 2, border_radius=12
+        )
+
+        for i in range(2):
+            line_y = btn_y + 15 + i * 18
+            pygame.draw.line(
+                self.screen,
+                (50, 65, 90),
+                (btn_x + 10, line_y),
+                (btn_x + btn_width - 10, line_y),
+                1,
+            )
+
+        btn_font = pygame.font.Font(None, 20)
+        btn_text = btn_font.render("🌧 TRIGGER RAIN", True, (180, 210, 255))
+        text_rect = btn_text.get_rect(center=self.rain_button_rect.center)
+        self.screen.blit(btn_text, text_rect)
+
     def run(self):
         while self.running:
             self.clock.tick(FPS)
@@ -782,11 +921,26 @@ class Game:
                                 print("🌱 Plant crops triggered by G key!")
 
                     # Check for plant button click
-                    if event.type == pygame.MOUSEBUTTONDOWN and self.plant_button_rect:
-                        if self.plant_button_rect.collidepoint(event.pos):
+                    if event.type == pygame.MOUSEBUTTONDOWN:
+                        if (
+                            self.change_season_button_rect
+                            and self.change_season_button_rect.collidepoint(event.pos)
+                            and self.season
+                        ):
+                            self.season.advance_manual(self.grid)
+                            print(f"🔁 Manual season change -> {self.season.name}")
+
+                        if self.plant_button_rect and self.plant_button_rect.collidepoint(event.pos):
                             if self.farmer:
                                 self.farmer.trigger_planting()
                                 print("🌱 Plant crops triggered by button!")
+
+                        if self.rain_button_rect and self.rain_button_rect.collidepoint(event.pos):
+                            if self.grid and self.season:
+                                self.grid.apply_rain()
+                                self.season.rain_active = True
+                                self.season.rain_timer = 4 * FPS
+                                print("🌧 Rain triggered by button!")
 
                 elif self.state == "PAUSED":
                     if event.type == pygame.KEYDOWN:
@@ -816,7 +970,7 @@ class Game:
 
             elif self.state == "CSP":
                 self.screen.fill((34, 139, 34))
-                self.grid.draw(self.screen, self.game_tick, None, 0)
+                self.grid.draw(self.screen, self.game_tick, None, -1)
                 if self.farm_ui:
                     self.farm_ui.draw(self.screen)
                 self.csp_popup.draw()
@@ -824,29 +978,28 @@ class Game:
             elif self.state == "PLAYING":
                 self.season.update(self.grid)
                 if self.check_end_condition():
+                    animal_score = self.animal_bear.score + self.animal_rabbit.score
                     self.end_screen = EndScreen(
                         self.screen,
                         self.farmer.score,
                         self.guard.score,
-                        self.animal.score,
+                        animal_score,
                     )
                     self.state = "END"
 
                 for agent in self.agents:
                     agent.update(self.grid, self.agents)
-                if not self.animal.alive:
-                    self.animal.respawn(16, 1)
+                # Respawn caught animals at random positions
+                if not self.animal_bear.alive:
+                    self.animal_bear.respawn(*self._random_spawn(self.grid), self.grid)
+                if not self.animal_rabbit.alive:
+                    self.animal_rabbit.respawn(*self._random_spawn(self.grid), self.grid)
                 self.game_tick += 1
 
                 self.screen.fill((34, 139, 34))
-                self.grid.draw(self.screen, self.game_tick, None, self.season.index)
+                self.grid.draw(self.screen, self.game_tick, None, -1)
                 if self.farm_ui:
                     self.farm_ui.draw(self.screen)
-                self.draw_season_info()
-                self.draw_minimap()
-
-                # Draw plant button
-                self.draw_plant_button()
 
                 for agent in self.agents:
                     if hasattr(agent, "alive") and not agent.alive:
@@ -857,13 +1010,36 @@ class Game:
                 if self.farmer:
                     self.farmer.draw_failed_plant_indicator(self.screen)
 
-            elif self.state == "PAUSED":
-                self.screen.fill((34, 139, 34))
-                self.grid.draw(self.screen, self.game_tick, None, self.season.index)
-                if self.farm_ui:
-                    self.farm_ui.draw(self.screen)
+                self.draw_season_fullscreen_overlay()
+                self.draw_day_night_overlay()
                 self.draw_season_info()
                 self.draw_minimap()
+                self.draw_change_season_button(enabled=True)
+
+                # Draw plant button
+                self.draw_plant_button()
+                self.draw_rain_button()
+
+            elif self.state == "PAUSED":
+                self.screen.fill((34, 139, 34))
+                self.grid.draw(self.screen, self.game_tick, None, -1)
+                if self.farm_ui:
+                    self.farm_ui.draw(self.screen)
+
+                for agent in self.agents:
+                    if hasattr(agent, "alive") and not agent.alive:
+                        continue
+                    agent.draw(self.screen)
+
+                # Draw failed plant indicator for farmer
+                if self.farmer:
+                    self.farmer.draw_failed_plant_indicator(self.screen)
+
+                self.draw_season_fullscreen_overlay()
+                self.draw_day_night_overlay()
+                self.draw_season_info()
+                self.draw_minimap()
+                self.draw_change_season_button(enabled=False)
 
                 # Draw plant button (disabled during pause)
                 btn_width = 140
@@ -881,15 +1057,6 @@ class Game:
                 btn_text = btn_font.render("🌱 PLANT CROPS", True, (150, 150, 150))
                 text_rect = btn_text.get_rect(center=pause_btn_rect.center)
                 self.screen.blit(btn_text, text_rect)
-
-                for agent in self.agents:
-                    if hasattr(agent, "alive") and not agent.alive:
-                        continue
-                    agent.draw(self.screen)
-                
-                # Draw failed plant indicator for farmer
-                if self.farmer:
-                    self.farmer.draw_failed_plant_indicator(self.screen)
                 
                 self.draw_pause_screen()
 

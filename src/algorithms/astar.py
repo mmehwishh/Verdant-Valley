@@ -47,7 +47,23 @@ def astar(grid, start, goal, cost_dict=None):
         col, row = current
         for nc, nr in neighbors_4(col, row, grid.cols, grid.rows):
             tile = grid.get(nc, nr)
-            move_cost = cost_dict.get(tile.type if tile else None, 1.0)
+            if tile is None:
+                continue
+
+            if callable(cost_dict):
+                move_cost = cost_dict(tile)
+            else:
+                move_cost = cost_dict.get(tile.type, 1.0)
+
+            if not isinstance(move_cost, (int, float)):
+                continue
+            move_cost = float(move_cost)
+
+            if move_cost != float("inf"):
+                if getattr(tile, "wet", False):
+                    move_cost += 0.2
+                if getattr(tile, "frozen", False):
+                    move_cost += 0.45
 
             # Skip impassable tiles
             if move_cost == float("inf"):

@@ -209,6 +209,8 @@ class Tile:
         self.crop = CROP_NONE
         self.crop_stage = 0  # 0-3
         self.wet = False
+        self.frozen = False
+        self.managed_growth = False
         self._texture = None  # baked texture data dict
 
     def bake(self):
@@ -390,12 +392,26 @@ class Grid:
                         n = self.get(c + dc, r + dr)
                         if n and n.type in (TILE_DIRT, TILE_GRASS):
                             new_mud.append((c + dc, r + dr))
+                if t.type == TILE_FIELD and t.crop == CROP_NONE and random.random() < 0.05:
+                    new_mud.append((c, r))
                 if t.type in (TILE_FIELD, TILE_GRASS):
                     t.wet = True
         for c, r in new_mud:
             if 0 <= c < self.cols and 0 <= r < self.rows:
                 self.tiles[c][r].type = TILE_MUD
                 self.tiles[c][r].bake()
+
+    def apply_winter_freeze(self):
+        """Mark terrain as frozen (terrain-only seasonal effect)."""
+        for c in range(self.cols):
+            for r in range(self.rows):
+                t = self.tiles[c][r]
+                t.frozen = t.type in (TILE_GRASS, TILE_DIRT, TILE_MUD, TILE_FIELD)
+
+    def clear_winter_freeze(self):
+        for c in range(self.cols):
+            for r in range(self.rows):
+                self.tiles[c][r].frozen = False
 
     # ── Hover helper ──────────────────────────────────────────────────────────
 
@@ -471,7 +487,7 @@ class Grid:
 
     def _draw_tile(self, surface, t: Tile, tick: int):
         x, y = grid_to_px(t.col, t.row)
-        tx = t.texture
+        tx = t.texture or {}
 
         base = TILE_COLOR[t.type]
         hi = TILE_HIGHLIGHT[t.type]
@@ -481,6 +497,11 @@ class Grid:
         if t.wet and t.type != TILE_WATER:
             base = tuple(max(0, v - 22) for v in base)
             hi = tuple(max(0, v - 22) for v in hi)
+
+        # Winter freeze tint
+        if getattr(t, "frozen", False) and t.type != TILE_WATER:
+            base = tuple(int(base[i] * 0.55 + (180, 210, 235)[i] * 0.45) for i in range(3))
+            hi = tuple(int(hi[i] * 0.50 + (220, 235, 250)[i] * 0.50) for i in range(3))
 
         tile_rect = pygame.Rect(x, y, TILE_SIZE, TILE_SIZE)
 
@@ -611,67 +632,6 @@ class Grid:
                         (x + sx + h_off[0], y + sy + h_off[1]),
                         max(1, h_size - 1),
                     )
-            for pebble in tx.get("pebbles", []):
-                sx = pebble["x"]
-                sy = pebble["y"]
-                sr = pebble["r"]
-                h_off = pebble["highlight_offset"]
-                s_off = pebble["shadow_offset"]
-                c_var = pebble["color_var"]
-
-                # Base stone color with variation
-                base = TILE_COLOR[TILE_STONE]
-                stone_color = (
-                    max(40, min(200, base[0] + c_var)),
-                    max(40, min(200, base[1] + c_var)),
-                    max(40, min(200, base[2] + c_var)),
-                )
-
-                # Deep shadow (darkest inner ring)
-                shadow_color = (
-                    max(40, stone_color[0] - 30),
-                    max(40, stone_color[1] - 30),
-                    max(40, stone_color[2] - 30),
-                )
-                pygame.draw.circle(
-                    surface,
-                    shadow_color,
-                    (x + sx + s_off[0], y + sy + s_off[1]),
-                    sr + 1,
-                )
-
-                # Main stone body
-                pygame.draw.circle(surface, stone_color, (x + sx, y + sy), sr)
-
-                # Subtle mid-tone ring for depth
-                mid_color = (
-                    (stone_color[0] + shadow_color[0]) // 2,
-                    (stone_color[1] + shadow_color[1]) // 2,
-                    (stone_color[2] + shadow_color[2]) // 2,
-                )
-                pygame.draw.circle(surface, mid_color, (x + sx, y + sy), sr, 1)
-
-                # Top highlight (bright edge)
-                highlight_color = (
-                    min(255, stone_color[0] + 40),
-                    min(255, stone_color[1] + 40),
-                    min(255, stone_color[2] + 40),
-                )
-                h_size = max(1, sr // 3)
-                pygame.draw.circle(
-                    surface,
-                    highlight_color,
-                    (x + sx + h_off[0], y + sy + h_off[1]),
-                    h_size,
-                )
-
-                # Micro-shine dot on highlight
-                pygame.draw.circle(
-                    surface,
-                    (255, 255, 255),
-                    (x + sx + h_off[0], y + sy + h_off[1]),
-                    max(1, h_size - 1),
-                )
 
         elif t.type == TILE_MUD:
             for streak_x in tx.get("streaks", []):
@@ -714,13 +674,18 @@ class Grid:
                     surface.blit(es, (x + rx, y + ry))
 
         # ── Crop rendering ─────────────────────────────────────────────────────
-        if t.type == TILE_FIELD and t.crop != CROP_NONE:
+        if t.crop != CROP_NONE:
             self._draw_crop(surface, t, x, y, tick)
 
         # ── Tile border (subtle) ──────────────────────────────────────────────
         pygame.draw.rect(
             surface, (0, 0, 0, 55), tile_rect, 1, border_radius=TILE_RADIUS
         )
+
+        if getattr(t, "frozen", False) and t.type != TILE_WATER:
+            frost = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+            frost.fill((210, 235, 255, 35))
+            surface.blit(frost, (x, y))
 
     # ── Crop drawing ──────────────────────────────────────────────────────────
 
@@ -839,9 +804,6 @@ class Grid:
             tint = pygame.Surface((grid_w, grid_h), pygame.SRCALPHA)
             tint.fill(tint_color)
             self._tint_surf_cache[season_index] = tint
-        surface.blit(
-            self._tint_surf_cache[season_index], (GRID_OFFSET_X, GRID_OFFSET_Y)
-        )
         surface.blit(
             self._tint_surf_cache[season_index], (GRID_OFFSET_X, GRID_OFFSET_Y)
         )

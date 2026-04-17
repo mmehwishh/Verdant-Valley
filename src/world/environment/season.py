@@ -1,3 +1,10 @@
+"""
+world/season.py  —  Verdant Valley
+Season and time manager for deterministic world progression.
+Handles automatic/manual season cycling, synchronized day/night state,
+seasonal weather effects (rain), and winter freeze hooks for the grid.
+"""
+
 import math
 from utils.constants import *
 
@@ -9,6 +16,11 @@ class SeasonManager:
         self.rain_active = False
         self.rain_timer = 0
         self.bloom = 0.0
+        self.day_night_cycle = 24 * FPS
+        self.day_count = 1
+        self.time_of_day = "Day"
+        self.is_night = False
+        self.night_alpha = 0
 
     @property
     def name(self):
@@ -20,19 +32,22 @@ class SeasonManager:
 
     def update(self, grid):
         self.tick += 1
+        self._update_day_night()
 
         # Grow crops each 120 ticks
         if self.tick % 120 == 0:
             for c in range(grid.cols):
                 for r in range(grid.rows):
                     t = grid.tiles[c][r]
+                    if getattr(t, "managed_growth", False):
+                        continue
                     if t.crop != CROP_NONE and t.crop_stage < 3:
                         t.crop_stage += 1
 
-        # Random rain every ~15 seconds in summer
-        if self.name == "☀️ Summer" and self.tick % (15 * FPS) == 0:
+        # Random rain every ~18 seconds in summer
+        if self.name == "☀️ Summer" and self.tick % (18 * FPS) == 0:
             self.rain_active = True
-            self.rain_timer = 5 * FPS
+            self.rain_timer = 4 * FPS
             grid.apply_rain()
 
         if self.rain_active:
@@ -47,16 +62,45 @@ class SeasonManager:
         if self.tick >= SEASON_DURATION:
             self._advance(grid)
 
+    def advance_manual(self, grid):
+        """Manually force the next season while preserving runtime flow."""
+        self._advance(grid)
+
     def _advance(self, grid):
         self.tick = 0
         self.index += 1
         # Reset rain/wet status at season boundaries
         self.rain_active = False
         self.rain_timer = 0
+        self._update_day_night()
+        self._apply_season_effects(grid)
         if self.name == "🌱 Spring":
             for c in range(grid.cols):
                 for r in range(grid.rows):
                     grid.tiles[c][r].wet = False
+
+    def apply_current_effects(self, grid):
+        self._apply_season_effects(grid)
+
+    def _apply_season_effects(self, grid):
+        if self.name == "❄️ Winter":
+            grid.apply_winter_freeze()
+        else:
+            grid.clear_winter_freeze()
+
+    def _update_day_night(self):
+        if self.day_night_cycle <= 0:
+            self.day_night_cycle = 24 * FPS
+
+        cycle_pos = self.tick % self.day_night_cycle
+        cycle_ratio = cycle_pos / self.day_night_cycle
+        night_level_raw = 0.5 - 0.5 * math.cos(2 * math.pi * cycle_ratio)
+        night_level = max(0.0, (night_level_raw - 0.50) / 0.50)
+
+        self.night_alpha = int(night_level * 130)
+        self.is_night = cycle_pos >= (self.day_night_cycle // 2)
+        self.time_of_day = "Night" if self.is_night else "Day"
+        self.day_count = (self.tick // self.day_night_cycle) + 1
 
     def time_label(self):
         secs_left = max(0, (SEASON_DURATION - self.tick) // FPS)

@@ -49,15 +49,34 @@ PLANT_TILE_SCORE = {
 }
 
 # Crops cycle through stages 0 (seed) → 1 (sprout) → 2 (ripe)
-# Ticks needed to advance each stage (at 60 fps, 300 ticks ≈ 5 s)
-CROP_GROWTH_TICKS = {
-    CROP_WHEAT: (180, 300),      # stage0→1, stage1→2
+# Keep both timing profiles so you can switch without losing either behavior.
+CROP_GROWTH_TICKS_OLD = {
+    CROP_WHEAT: (180, 300),
     CROP_SUNFLOWER: (240, 360),
     CROP_CORN: (200, 320),
-    CROP_TOMATO: (220, 340),     # water-loving crop
-    CROP_CARROT: (160, 280),     # fast-growing
-    CROP_POTATO: (200, 350),     # dry soil crop
+    CROP_TOMATO: (220, 340),
+    CROP_CARROT: (160, 280),
+    CROP_POTATO: (200, 350),
 }
+
+CROP_GROWTH_TICKS_NEW = {
+    CROP_WHEAT: (900, 1800),
+    CROP_SUNFLOWER: (900, 1800),
+    CROP_CORN: (900, 1800),
+    CROP_TOMATO: (900, 1800),
+    CROP_CARROT: (900, 1800),
+    CROP_POTATO: (900, 1800),
+}
+
+# Switch this between "old" and "new" as needed.
+CROP_GROWTH_PROFILE = "old"
+
+if CROP_GROWTH_PROFILE == "new":
+    CROP_GROWTH_TICKS = CROP_GROWTH_TICKS_NEW
+    DEFAULT_CROP_GROWTH_TICKS = (900, 1800)
+else:
+    CROP_GROWTH_TICKS = CROP_GROWTH_TICKS_OLD
+    DEFAULT_CROP_GROWTH_TICKS = (180, 300)
 
 
 class Farmer(Agent):
@@ -70,8 +89,22 @@ class Farmer(Agent):
 
     def __init__(self, col, row):
         import os
+        import pygame
 
-        path = "assets/agents/farmer/farmer.png"
+        path = "assets/agents/farmer/Farmer.png"
+        frame_w, frame_h = 32, 32
+        rows, cols = 10, 6
+
+        if os.path.exists(path):
+            try:
+                sheet = pygame.image.load(path)
+                sw, sh = sheet.get_size()
+                cols = max(1, sw // frame_w)
+                rows = max(1, sh // frame_h)
+                print(f"Farmer sheet: {sw}x{sh}, frames: {cols}x{rows} @ {frame_w}x{frame_h}")
+            except Exception:
+                pass
+
         super().__init__(
             col,
             row,
@@ -79,11 +112,23 @@ class Farmer(Agent):
             speed=2.0,
             name="Farmer",
             sprite_sheet_path=path if os.path.exists(path) else None,
-            frame_size=(30, 30),
-            animation_rows=6,
-            animation_cols=6,
+            frame_size=(frame_w, frame_h),
+            animation_rows=rows,
+            animation_cols=cols,
             scale=2,
         )
+
+        # Farmer.png row layout is not the same as 4x4 sheets used by guard/bear.
+        # Map movement directions to the walk rows from this sheet.
+        self._anim_direction_rows = {
+            "down": 0,
+            "up": 2 if rows > 2 else 0,
+            "left": 4 if rows > 4 else 0,
+            "right": 3 if rows > 3 else 0,
+        }
+
+        if self.animation:
+            self.animation.animation_speed = 0.15
 
         self.target = None
         self.replan_cd = 0
@@ -106,6 +151,8 @@ class Farmer(Agent):
 
     def trigger_planting(self):
         """Call from your UI 'Plant Crops' button handler."""
+        if self._planting_mode:
+            return
         self._plant_requested = True
         print("🌱 Farmer: planting requested")
 
@@ -168,7 +215,7 @@ class Farmer(Agent):
           - must be reachable (A* sanity check skipped here — done at path time)
           - bonus for being adjacent to a water tile
           - avoid planting near animals
-        Returns up to 8 best candidates.
+        Returns all candidates sorted by desirability.
         """
         candidates = []
 
@@ -212,7 +259,7 @@ class Farmer(Agent):
                 candidates.append((score, c, r))
 
         candidates.sort(reverse=True)
-        return [(c, r) for _, c, r in candidates[:8]]
+        return [(c, r) for _, c, r in candidates]
 
     def _choose_crop_for_tile(self, grid, c, r) -> int:
         """Pick the best crop for this tile (field → sunflower, mud → corn, dirt → wheat)."""
@@ -232,6 +279,7 @@ class Farmer(Agent):
             crop = self._choose_crop_for_tile(grid, c, r)
         tile.crop = crop
         tile.crop_stage = 0  # stage 0 = seed / just planted
+        tile.managed_growth = True
         self._growth_timers[(c, r)] = 0
         self.plant_count += 1
         print(f"🌱 Farmer planted {CROP_NAMES[crop]} at ({c},{r})")
@@ -241,12 +289,13 @@ class Farmer(Agent):
         tile = grid.get(self.col, self.row)
         if tile and tile.crop != CROP_NONE and tile.crop_stage >= 2:
             crop_name = CROP_NAMES[tile.crop]
-            value = CROP_VALUE[tile.crop] * tile.crop_stage
+            value = 10
             self.score += value
             self.harvest_count += 1
             print(f"🌾 Farmer harvested {crop_name}! +{value}  total={self.score}")
             tile.crop = CROP_NONE
             tile.crop_stage = 0
+            tile.managed_growth = False
             self._growth_timers.pop((self.col, self.row), None)
             self.target = None
             self.state = "harvesting"
@@ -257,17 +306,20 @@ class Farmer(Agent):
         for (c, r), ticks in self._growth_timers.items():
             tile = grid.get(c, r)
             if tile is None or tile.crop == CROP_NONE:
+                if tile is not None:
+                    tile.managed_growth = False
                 done.append((c, r))
                 continue
             ticks += 1
             self._growth_timers[(c, r)] = ticks
 
-            grow = CROP_GROWTH_TICKS.get(tile.crop, (240, 480))
+            grow = CROP_GROWTH_TICKS.get(tile.crop, DEFAULT_CROP_GROWTH_TICKS)
             if tile.crop_stage == 0 and ticks >= grow[0]:
                 tile.crop_stage = 1
                 print(f"🌿 Crop sprouted at ({c},{r})")
             elif tile.crop_stage == 1 and ticks >= grow[1]:
                 tile.crop_stage = 2
+                tile.managed_growth = False
                 print(f"🌻 Crop ripe at ({c},{r})!")
                 done.append((c, r))  # stop tracking once ripe
 
@@ -306,9 +358,9 @@ class Farmer(Agent):
         self._plant_at(grid, self.col, self.row, crop)
         print(f"🌱 Farmer planted {CROP_NAMES[crop]} at ({self.col},{self.row})")
     
-    def _show_failed_plant(self):
+    def _show_failed_plant(self, tile_pos=None):
         """Mark this tile as failed plant attempt (shows red cross for 1 second)."""
-        self._failed_plant_tile = (self.col, self.row)
+        self._failed_plant_tile = tile_pos if tile_pos is not None else (self.col, self.row)
         self._failed_plant_timer = 60  # Show for 60 ticks at 60fps = 1 second
 
     def _update_planting(self, grid, agents):
@@ -323,11 +375,17 @@ class Farmer(Agent):
 
         if not self._plant_queue:
             self._planting_mode = False
+            self.target = None
             self.state = "idle"
             print("✅ Farmer finished planting")
             return
 
         next_tile = self._plant_queue[0]
+        next_tile_obj = grid.get(*next_tile)
+        if next_tile_obj is None or next_tile_obj.type not in PLANT_TILE_SCORE:
+            self._show_failed_plant(next_tile)
+            self._plant_queue.pop(0)
+            return
 
         if (self.col, self.row) == next_tile:
             self._plant_at(grid, *next_tile)
@@ -342,15 +400,14 @@ class Farmer(Agent):
                 self.replan_cd = 60
             else:
                 print(f"⚠️ Farmer can't reach plant tile {next_tile}, skipping")
+                self._show_failed_plant(next_tile)
                 self._plant_queue.pop(0)
-            self.moving = False
             return
 
     def _find_path_with_animal_avoidance(self, grid, agents, target):
         """Find path to target, avoiding tiles near animals."""
         def cost_with_animal_avoidance(tile):
-            from utils.constants import TILE_COST
-            base = TILE_COST.get(tile.type, 1.0)
+            base = FARMER_COSTS.get(tile.type, 1.0)
             return _animal_aware_cost(tile, base, agents, animal_avoidance_radius=2)
 
         result = astar(grid, (self.col, self.row), target, cost_with_animal_avoidance)
@@ -370,14 +427,26 @@ class Farmer(Agent):
         self._tick_growth(grid)
         self._harvest(grid)
 
-        # Start planting if button was pressed
+        # Start planting mode only when explicitly requested by the player.
         if self._plant_requested and not self._planting_mode:
-            self._try_plant_current_tile(grid)
-            return
+            self._plant_requested = False
+            self._plant_queue = self._pick_plant_tiles(grid, agents)
+
+            if self._plant_queue:
+                self._planting_mode = True
+                self.state = "planting"
+                self.target = None
+                self.path = []
+                self.path_idx = 0
+                self.moving = False
+                self.replan_cd = 0
+            else:
+                self._try_plant_current_tile(grid)
+                return
 
         # Planting mode takes priority over harvesting
         if self._planting_mode:
-            self._update_planting(grid)
+            self._update_planting(grid, agents)
             return
 
         # ── Harvest mode ──────────────────────────────────────────────────
@@ -386,9 +455,9 @@ class Farmer(Agent):
 
             if new_target and new_target != self.target:
                 self.target = new_target
-                result = astar(grid, (self.col, self.row), self.target, FARMER_COSTS)
-                if result.path:
-                    self.set_path(result.path, result.explored)
+                path, explored = self._find_path_with_animal_avoidance(grid, agents, self.target)
+                if path:
+                    self.set_path(path, explored)
                     self.replan_cd = 90
                     self.state = "moving"
                 else:
@@ -399,6 +468,31 @@ class Farmer(Agent):
                 self.state = "idle"
             else:
                 self.state = "moving"
+
+    def update_animation_direction(self):
+        """Use farmer-specific direction rows from Farmer.png."""
+        if not self.animation:
+            return
+
+        dx = self.col - self.last_pos[0]
+        dy = self.row - self.last_pos[1]
+
+        if dx > 0:
+            self.animation.set_direction(self._anim_direction_rows["right"])
+        elif dx < 0:
+            self.animation.set_direction(self._anim_direction_rows["left"])
+        elif dy > 0:
+            self.animation.set_direction(self._anim_direction_rows["down"])
+        elif dy < 0:
+            self.animation.set_direction(self._anim_direction_rows["up"])
+
+        self.last_pos = (self.col, self.row)
+
+        if self.moving:
+            self.animation.update()
+        else:
+            self.animation.current_frame = 0
+            self.animation.animation_timer = 0
 
     def draw(self, surface, font=None):
         """Draw farmer and show red cross on failed plant attempt."""
