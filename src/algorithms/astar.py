@@ -13,40 +13,16 @@ class AStarResult:
         self.cost = cost
 
 
-def get_move_cost(tile):
-    """Return movement cost for a tile. Returns inf if impassable."""
-    from utils.constants import (
-        TILE_WATER,
-        TILE_STONE,
-        TILE_MUD,
-        TILE_DIRT,
-        TILE_GRASS,
-        TILE_FIELD,
-    )
-
-    if tile is None:
-        return float("inf")
-
-    # Farmer cannot pass through water or stone
-    if tile.type == TILE_WATER or tile.type == TILE_STONE:
-        return float("inf")
-
-    # Weighted terrain costs
-    costs = {
-        TILE_MUD: 3.0,  # Slow movement
-        TILE_DIRT: 1.0,  # Normal
-        TILE_GRASS: 1.0,  # Normal
-        TILE_FIELD: 1.0,  # Normal
-    }
-    return costs.get(tile.type, 1.0)
-
-
-def astar(grid, start, goal):
+def astar(grid, start, goal, cost_dict=None):
     """
     A* on the weighted grid.
     Returns AStarResult(path, explored, total_cost).
     path is [] if unreachable.
     """
+    if cost_dict is None:
+        from utils.constants import TILE_COST
+        cost_dict = TILE_COST
+
     if start == goal:
         return AStarResult([start], set(), 0)
 
@@ -71,7 +47,7 @@ def astar(grid, start, goal):
         col, row = current
         for nc, nr in neighbors_4(col, row, grid.cols, grid.rows):
             tile = grid.get(nc, nr)
-            move_cost = get_move_cost(tile)
+            move_cost = cost_dict.get(tile.type if tile else None, 1.0)
 
             # Skip impassable tiles
             if move_cost == float("inf"):

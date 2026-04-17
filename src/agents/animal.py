@@ -109,7 +109,7 @@ class Animal(Agent):
         if not self.moving or self.replan_cd == 0:
             target = self._pick_target(grid, agents)
             if target:
-                result = astar(grid, (self.col, self.row), target)
+                result = astar(grid, (self.col, self.row), target, ANIMAL_COSTS)
                 if result.path:
                     self.set_path(result.path, result.explored)
                     self.replan_cd = 60
@@ -121,7 +121,7 @@ class Animal(Agent):
                     nr = max(0, min(grid.rows - 1, nr))
                     t = grid.get(nc, nr)
                     if t and t.walkable:
-                        result = astar(grid, (self.col, self.row), (nc, nr))
+                        result = astar(grid, (self.col, self.row), (nc, nr), ANIMAL_COSTS)
                         if result.path:
                             self.set_path(result.path)
                             break

@@ -38,13 +38,90 @@ class CSPPopup:
         self.font_sec = pygame.font.Font(None, 22)
         self.font_stat = pygame.font.Font(None, 20)
         self.font_btn = pygame.font.Font(None, 22)
+        self.font_btn_small = pygame.font.Font(None, 18)
         self.font_legend = pygame.font.Font(None, 16)
+        self.font_input = pygame.font.Font(None, 24)
 
         self.wood_base = (139, 90, 43)
         self.wood_dark = (100, 65, 30)
         self.wood_light = (170, 115, 55)
         self.panel_bg = (28, 22, 16)
         self.inner_bg = (38, 30, 20)
+        self.crop_counts = self.csp_solver.get_requested_counts()
+        self.mode = self.csp_solver.get_mode()
+        self.crop_controls = {}
+        self.mode_buttons = {}
+        self.message = ""
+        self._build_layout_controls()
+
+    def _build_layout_controls(self):
+        sx = self.x + self.grid_area_width + 8
+        sy = self.y + 64 + 14
+        cx = sx + 14
+        panel_inner_w = self.stats_area_width - 28
+        mode_y = sy + 30
+        gap = 10
+        mode_w = (panel_inner_w - gap) // 2
+        self.mode_buttons["auto"] = pygame.Rect(cx, mode_y, mode_w, 34)
+        self.mode_buttons["manual"] = pygame.Rect(
+            cx + mode_w + gap, mode_y, panel_inner_w - mode_w - gap, 34
+        )
+
+        crop_y = mode_y + 84
+        row_gap = 46
+        button_size = 28
+        value_w = 72
+
+        for index, crop in enumerate((CROP_WHEAT, CROP_SUNFLOWER, CROP_CORN)):
+            row_y = crop_y + index * row_gap
+            minus_rect = pygame.Rect(cx + 132, row_y - 4, button_size, button_size)
+            value_rect = pygame.Rect(cx + 168, row_y - 4, value_w, button_size)
+            plus_rect = pygame.Rect(cx + 248, row_y - 4, button_size, button_size)
+            self.crop_controls[crop] = {
+                "minus": minus_rect,
+                "plus": plus_rect,
+                "value": value_rect,
+            }
+
+    def _field_limit(self):
+        return self.csp_solver.available_field_count()
+
+    def _selected_total(self):
+        return sum(self.crop_counts.values())
+
+    def _fit_counts_to_limit(self):
+        limit = self._field_limit()
+        ordered_crops = [CROP_WHEAT, CROP_CORN, CROP_SUNFLOWER]
+        while self._selected_total() > limit:
+            for crop in ordered_crops:
+                if self.crop_counts[crop] > 0 and self._selected_total() > limit:
+                    self.crop_counts[crop] -= 1
+
+    def _sync_solver_counts(self):
+        try:
+            self.csp_solver.set_mode(self.mode)
+            self.csp_solver.set_requested_counts(self.crop_counts)
+            self.message = ""
+            return True
+        except ValueError as exc:
+            self.message = str(exc)
+            return False
+
+    def _adjust_crop(self, crop, delta):
+        next_value = max(0, self.crop_counts[crop] + delta)
+        next_counts = dict(self.crop_counts)
+        next_counts[crop] = next_value
+        if sum(next_counts.values()) > self._field_limit():
+            self.message = (
+                f"Total crops cannot exceed {self._field_limit()} available field tiles."
+            )
+            return
+        self.crop_counts = next_counts
+        self._sync_solver_counts()
+
+    def _set_mode(self, mode):
+        self.mode = mode
+        self._sync_solver_counts()
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -65,23 +142,37 @@ class CSPPopup:
         pygame.draw.rect(self.screen, bar_color, (x, y, fill_w, h), border_radius=3)
 
     def regenerate_everything(self):
-        print("\n🔄 Regenerating entire farm layout...")
+        print("\nRegenerating entire farm layout...")
         self.grid._build_map()
         self.grid._bake_all()
-        self.csp_solver.vars = self.grid.field_tiles()
-        self.csp_solver.water = self.grid.water_sources()
+        self.csp_solver.refresh_grid_context()
+        self._fit_counts_to_limit()
         self.csp_solver.assign = {}
         self.csp_solver.log = []
-        self.csp_solver.solve()
+        self._sync_solver_counts()
+        self.csp_solver.solve(self.crop_counts)
         self.csp_solver.apply_to_grid()
-        print("✅ New layout generated!\n")
+        print("New layout generated.\n")
 
     def handle_event(self, event):
         if not self.visible:
             return False
         if event.type == pygame.MOUSEBUTTONDOWN:
             mp = pygame.mouse.get_pos()
+            for mode, rect in self.mode_buttons.items():
+                if rect.collidepoint(mp):
+                    self._set_mode(mode)
+                    return True
+            if self.mode == "manual":
+                for crop, controls in self.crop_controls.items():
+                    if controls["minus"].collidepoint(mp):
+                        self._adjust_crop(crop, -1)
+                        return True
+                    if controls["plus"].collidepoint(mp):
+                        self._adjust_crop(crop, 1)
+                        return True
             if self.confirm_button.collidepoint(mp):
+                self.regenerate_everything()
                 self.visible = False
                 self.confirmed = True
                 return True
@@ -90,7 +181,9 @@ class CSPPopup:
                 return True
         return False
 
-    def draw_wood_button(self, rect, text, is_hover=False, accent=False):
+    def draw_wood_button(
+        self, rect, text, is_hover=False, accent=False, compact=False, text_font=None
+    ):
         if accent:
             base = (60, 140, 80) if not is_hover else (75, 165, 95)
             dark = (35, 90, 50)
@@ -98,15 +191,21 @@ class CSPPopup:
             base = self.wood_light if is_hover else self.wood_base
             dark = self.wood_dark
 
-        pygame.draw.rect(self.screen, base, rect, border_radius=10)
-        # subtle grain lines
-        for i in range(3):
-            ly = rect.y + 11 + i * 14
-            pygame.draw.line(
-                self.screen, dark, (rect.x + 10, ly), (rect.x + rect.width - 10, ly), 1
-            )
+        radius = 8 if compact else 10
+        pygame.draw.rect(self.screen, base, rect, border_radius=radius)
+        if not compact and rect.height >= 42:
+            for i in range(3):
+                ly = rect.y + 11 + i * 14
+                pygame.draw.line(
+                    self.screen,
+                    dark,
+                    (rect.x + 10, ly),
+                    (rect.x + rect.width - 10, ly),
+                    1,
+                )
         pygame.draw.rect(self.screen, dark, rect, 2, border_radius=10)
-        surf = self.font_btn.render(text, True, (255, 255, 255))
+        font = text_font or (self.font_btn_small if compact else self.font_btn)
+        surf = font.render(text, True, (255, 255, 255))
         self.screen.blit(surf, surf.get_rect(center=rect.center))
 
     # ── main draw ────────────────────────────────────────────────────────────
@@ -166,7 +265,84 @@ class CSPPopup:
         cx = sx + 14
         cy = sy + 14
 
+        cy = self._draw_section_header("GENERATION MODE", cx, cy, sw - 28)
+
+        mode_labels = {
+            "auto": "AUTO GENERATE",
+            "manual": "CUSTOM INPUT",
+        }
+        for mode, rect in self.mode_buttons.items():
+            hovered = rect.collidepoint(pygame.mouse.get_pos())
+            active = self.mode == mode
+            self.draw_wood_button(
+                rect,
+                mode_labels[mode],
+                hovered or active,
+                accent=active,
+                compact=True,
+                text_font=self.font_btn_small,
+            )
+
+        cy += 56
+        cy = self._draw_section_header("SELECT CROPS", cx, cy, sw - 28)
+
+        crop_rows = [
+            (CROP_WHEAT, "Wheat", (230, 200, 60)),
+            (CROP_SUNFLOWER, "Sunflower", (255, 180, 0)),
+            (CROP_CORN, "Corn", (160, 210, 60)),
+        ]
+        for crop, name, color in crop_rows:
+            row_y = cy
+            controls = self.crop_controls[crop]
+            pygame.draw.rect(self.screen, color, (cx, row_y + 4, 14, 14), border_radius=3)
+            label_color = (210, 210, 200) if self.mode == "manual" else (140, 140, 140)
+            label = self.font_stat.render(name, True, label_color)
+            self.screen.blit(label, (cx + 22, row_y))
+
+            for symbol, rect in (
+                ("-", controls["minus"]),
+                ("+", controls["plus"]),
+            ):
+                hovered = rect.collidepoint(pygame.mouse.get_pos())
+                self.draw_wood_button(
+                    rect,
+                    symbol,
+                    hovered and self.mode == "manual",
+                    accent=False,
+                    compact=True,
+                    text_font=self.font_btn,
+                )
+
+            value_rect = controls["value"]
+            pygame.draw.rect(self.screen, (55, 44, 30), value_rect, border_radius=6)
+            pygame.draw.rect(self.screen, self.wood_dark, value_rect, 1, border_radius=6)
+            value_color = (255, 215, 0) if self.mode == "manual" else (150, 150, 150)
+            value_surf = self.font_input.render(str(self.crop_counts[crop]), True, value_color)
+            self.screen.blit(value_surf, value_surf.get_rect(center=value_rect.center))
+            cy += 46
+
+        total_limit = self._field_limit()
+        if self.mode == "manual":
+            total_label = f"Selected: {self._selected_total()} / {total_limit} field tiles"
+            total_color = (
+                (100, 220, 120)
+                if self._selected_total() <= total_limit
+                else (220, 120, 100)
+            )
+        else:
+            total_label = "Auto mode uses the original random CSP layout."
+            total_color = (170, 190, 220)
+        total_text = self.font_stat.render(total_label, True, total_color)
+        self.screen.blit(total_text, (cx, cy))
+        cy += 20
+
+        if self.message:
+            message_surf = self.font_legend.render(self.message, True, (255, 160, 120))
+            self.screen.blit(message_surf, (cx, cy))
+            cy += 18
+
         # --- Crop counts ---
+        cy += 2
         cy = self._draw_section_header("CROPS", cx, cy, sw - 28)
 
         crop_counts = {CROP_WHEAT: 0, CROP_SUNFLOWER: 0, CROP_CORN: 0}
@@ -198,19 +374,19 @@ class CSPPopup:
         # total fill rate
         fill_pct = int(100 * total_crops / total_fields)
         total_surf = self.font_stat.render(
-            f"Fill rate  {total_crops}/{total_fields}  ({fill_pct}%)",
+            f"Fill rate {total_crops}/{total_fields} ({fill_pct}%)",
             True,
             (100, 220, 120),
         )
         self.screen.blit(total_surf, (cx, cy + 2))
-        cy += 24
+        cy += 20
         self._draw_bar(
             cx, cy, bar_w, 9, total_crops / total_fields, (80, 200, 100), (50, 45, 35)
         )
-        cy += 22
+        cy += 18
 
         # --- Terrain counts ---
-        cy += 10
+        cy += 6
         cy = self._draw_section_header("TERRAIN", cx, cy, sw - 28)
 
         terrain_meta = {
@@ -238,9 +414,9 @@ class CSPPopup:
             cnt_s = self.font_stat.render(str(count), True, (200, 200, 180))
             self.screen.blit(label, (cx + 20, cy))
             self.screen.blit(cnt_s, (cx + bar_w - cnt_s.get_width(), cy))
-            cy += 20
+            cy += 18
             self._draw_bar(cx, cy, bar_w, 5, count / total_tiles, tcolor)
-            cy += 13
+            cy += 10
 
         # --- Buttons ---
         mp = pygame.mouse.get_pos()
@@ -277,6 +453,9 @@ class CSPPopup:
             CROP_WHEAT: (230, 200, 60),
             CROP_SUNFLOWER: (255, 180, 0),
             CROP_CORN: (160, 210, 60),
+            CROP_TOMATO: (220, 40, 40),
+            CROP_CARROT: (255, 140, 40),
+            CROP_POTATO: (180, 140, 80),
         }
 
         for c in range(GRID_COLS):

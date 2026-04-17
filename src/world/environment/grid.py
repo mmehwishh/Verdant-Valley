@@ -8,11 +8,8 @@ import random
 import math
 import sys
 import os
-import re
-import base64
 
 import pygame
-from io import BytesIO
 
 sys.path.insert(
     0,
@@ -56,10 +53,18 @@ from utils.helpers import grid_to_px, draw_rounded_rect
 REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
+SPRING_TILEMAP_PATH = os.path.join(
+    REPO_ROOT,
+    "assets",
+    "Verdant Valley Sprites",
+    "Tiny Wonder Farm Free",
+    "tilemaps",
+    "spring farm tilemap.png",
+)
+SPRING_TILE_SIZE = 16
+STONE_TILE_COORD = (7, 16)
 STONE_ASSET_PATHS = [
     os.path.join(REPO_ROOT, "assets", "images", "final_stone.jpg"),
-    os.path.join(REPO_ROOT, "assets", "images", "stones.png"),
-    os.path.join(REPO_ROOT, "assets", "images", "stones.svg"),
 ]
 STONE_ASSET = None
 
@@ -89,39 +94,6 @@ def _get_stone_asset():
             except Exception:
                 continue
 
-        # SVG fallback path for older assets.
-        try:
-            img = pygame.image.load(asset_path)
-            if pygame.display.get_surface() is not None:
-                img = img.convert_alpha()
-            scaled = pygame.transform.smoothscale(img, (TILE_SIZE, TILE_SIZE))
-            styled = _stylize_stone_asset(scaled)
-            if _surface_has_visible_pixels(styled):
-                STONE_ASSET = styled
-                return STONE_ASSET
-        except Exception:
-            pass
-
-        try:
-            with open(asset_path, "r", encoding="utf-8", errors="replace") as svg_file:
-                svg_text = svg_file.read()
-
-            match = re.search(r"data:image/png;base64,([A-Za-z0-9+/=\n\r]+)", svg_text)
-            if not match:
-                continue
-
-            png_data = base64.b64decode(match.group(1))
-            img = pygame.image.load(BytesIO(png_data), "stones.png")
-            if pygame.display.get_surface() is not None:
-                img = img.convert_alpha()
-            scaled = pygame.transform.smoothscale(img, (TILE_SIZE, TILE_SIZE))
-            styled = _stylize_stone_asset(scaled)
-            if _surface_has_visible_pixels(styled):
-                STONE_ASSET = styled
-                return STONE_ASSET
-        except Exception:
-            continue
-
     STONE_ASSET = None
 
     return STONE_ASSET
@@ -137,29 +109,6 @@ def _surface_has_visible_pixels(surface):
     return False
 
 
-def _stylize_stone_asset(surface):
-    """Remove dark background from the imported asset and tint details as stone."""
-    styled = pygame.Surface(surface.get_size(), pygame.SRCALPHA)
-    width, height = surface.get_size()
-
-    for x in range(width):
-        for y in range(height):
-            r, g, b, a = surface.get_at((x, y))
-            if a == 0:
-                continue
-
-            brightness = (r + g + b) // 3
-
-            # Treat near-black pixels as background.
-            if brightness < 24:
-                continue
-
-            # Map visible detail into a stone-gray gradient.
-            shade = max(90, min(220, 90 + int((brightness / 255) * 130)))
-            alpha = max(110, min(255, a))
-            styled.set_at((x, y), (shade, shade, shade, alpha))
-
-    return styled
 
 
 # ── Baked texture data per tile ───────────────────────────────────────────────
