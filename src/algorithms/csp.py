@@ -32,19 +32,16 @@ class CSPSolver:
     def _default_counts(self):
         total_fields = len(self.vars)
         target_planted = max(1, int(total_fields * 0.4))
-        sunflower = target_planted // 6
-        corn = target_planted // 5
-        tomato = target_planted // 7
-        carrot = target_planted // 8
-        potato = target_planted // 9
-        wheat = target_planted - sunflower - corn - tomato - carrot - potato
+        sunflower = target_planted // 4
+        corn = target_planted // 3
+        wheat = max(0, target_planted - sunflower - corn)
         return {
             CROP_WHEAT: wheat,
             CROP_SUNFLOWER: sunflower,
             CROP_CORN: corn,
-            CROP_TOMATO: tomato,
-            CROP_CARROT: carrot,
-            CROP_POTATO: potato,
+            CROP_TOMATO: 0,
+            CROP_CARROT: 0,
+            CROP_POTATO: 0,
         }
 
     def available_field_count(self):
@@ -379,6 +376,11 @@ class CSPSolver:
 
     def apply_to_grid(self):
         """Write the solved assignment back to the grid tiles."""
+        for col in range(self.grid.cols):
+            for row in range(self.grid.rows):
+                self.grid.tiles[col][row].crop = CROP_NONE
+                self.grid.tiles[col][row].crop_stage = 0
+
         for (col, row), crop in self.assign.items():
             if 0 <= col < self.grid.cols and 0 <= row < self.grid.rows:
                 self.grid.tiles[col][row].crop = crop

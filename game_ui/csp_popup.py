@@ -47,7 +47,15 @@ class CSPPopup:
         self.wood_light = (170, 115, 55)
         self.panel_bg = (28, 22, 16)
         self.inner_bg = (38, 30, 20)
-        self.crop_counts = self.csp_solver.get_requested_counts()
+        requested_counts = self.csp_solver.get_requested_counts()
+        self.crop_counts = {
+            CROP_WHEAT: requested_counts.get(CROP_WHEAT, 0),
+            CROP_SUNFLOWER: requested_counts.get(CROP_SUNFLOWER, 0),
+            CROP_CORN: requested_counts.get(CROP_CORN, 0),
+            CROP_TOMATO: 0,
+            CROP_CARROT: 0,
+            CROP_POTATO: 0,
+        }
         self.mode = self.csp_solver.get_mode()
         self.crop_controls = {}
         self.mode_buttons = {}
