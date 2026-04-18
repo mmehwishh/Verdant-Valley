@@ -378,6 +378,47 @@ class Grid:
             if self.tiles[c][r].crop != CROP_NONE
         ]
 
+    def ripe_crop_tiles(self):
+        return [
+            (c, r)
+            for c in range(self.cols)
+            for r in range(self.rows)
+            if self.tiles[c][r].crop != CROP_NONE and self.tiles[c][r].crop_stage >= 2
+        ]
+
+    def generate_random_crops(self, count):
+        """Generate 'count' random crops on field tiles (no CSP)"""
+        from utils.constants import CROP_WHEAT, CROP_SUNFLOWER, CROP_CORN, CROP_TOMATO, CROP_CARROT, CROP_POTATO
+        
+        # Clear all existing crops
+        for c in range(self.cols):
+            for r in range(self.rows):
+                if self.tiles[c][r].crop != CROP_NONE:
+                    self.tiles[c][r].crop = CROP_NONE
+                    self.tiles[c][r].crop_stage = 0
+        
+        # Get list of all field tiles
+        field_tiles = [
+            (c, r)
+            for c in range(self.cols)
+            for r in range(self.rows)
+            if self.tiles[c][r].type == TILE_FIELD
+        ]
+        
+        # Randomly select tiles for crops
+        if len(field_tiles) < count:
+            count = len(field_tiles)
+        
+        selected_tiles = random.sample(field_tiles, count)
+        crop_types = [CROP_WHEAT, CROP_SUNFLOWER, CROP_CORN, CROP_TOMATO, CROP_CARROT, CROP_POTATO]
+        
+        for c, r in selected_tiles:
+            crop_type = random.choice(crop_types)
+            self.tiles[c][r].crop = crop_type
+            self.tiles[c][r].crop_stage = random.randint(1, 2)
+
+        return len(selected_tiles)
+
     # ── Rain event ────────────────────────────────────────────────────────────
 
     def apply_rain(self):
