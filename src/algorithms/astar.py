@@ -4,6 +4,7 @@ src/algorithms/astar.py - A* Pathfinding with Terrain Costs
 
 import heapq
 from utils.helpers import manhattan, neighbors_4
+from utils.constants import TILE_WATER, TILE_STONE, TILE_SNOW_STONE
 
 
 class AStarResult:
@@ -13,15 +14,28 @@ class AStarResult:
         self.cost = cost
 
 
-def astar(grid, start, goal, cost_dict=None):
+def astar(grid, start, goal, cost_dict=None, agent_type=None, rain_active=False):
     """
     A* on the weighted grid.
     Returns AStarResult(path, explored, total_cost).
     path is [] if unreachable.
     """
+
+    # agent_type and rain_active are now explicit parameters
+
     if cost_dict is None:
-        from utils.constants import TILE_COST
-        cost_dict = TILE_COST
+        if agent_type == "Farmer":
+            from utils.constants import FARMER_COSTS
+            cost_dict = FARMER_COSTS
+        elif agent_type == "Guard":
+            from utils.constants import GUARD_COSTS
+            cost_dict = GUARD_COSTS
+        elif agent_type == "Animal":
+            from utils.constants import ANIMAL_COSTS
+            cost_dict = ANIMAL_COSTS
+        else:
+            from utils.constants import TILE_COST
+            cost_dict = TILE_COST
 
     if start == goal:
         return AStarResult([start], set(), 0)
@@ -45,10 +59,12 @@ def astar(grid, start, goal, cost_dict=None):
             return AStarResult(path, explored, g)
 
         col, row = current
+
         for nc, nr in neighbors_4(col, row, grid.cols, grid.rows):
             tile = grid.get(nc, nr)
             if tile is None:
                 continue
+
 
             if callable(cost_dict):
                 move_cost = cost_dict(tile)
@@ -58,6 +74,32 @@ def astar(grid, start, goal, cost_dict=None):
             if not isinstance(move_cost, (int, float)):
                 continue
             move_cost = float(move_cost)
+
+            if move_cost == float('inf'):
+                continue
+
+            # Frozen water tiles become walkable (ice)
+            if tile.type == TILE_WATER and getattr(tile, "frozen", False):
+                move_cost = 1.5  # walkable but slippery
+
+            # Custom movement rules for role-specific terrain constraints.
+            if agent_type in ("Farmer", "Guard"):
+                if getattr(tile, "flooded", False):
+                    move_cost = float("inf")
+                elif getattr(tile, "muddy", False):
+                    move_cost = float("inf")
+                elif tile.type == 7:
+                    move_cost = float("inf")
+                else:
+                    if callable(cost_dict):
+                        move_cost = cost_dict(tile)
+                    else:
+                        move_cost = cost_dict.get(tile.type, 1.0)
+            elif agent_type == "Animal":
+                if callable(cost_dict):
+                    move_cost = cost_dict(tile)
+                else:
+                    move_cost = cost_dict.get(tile.type, 1.0)
 
             if move_cost != float("inf"):
                 if getattr(tile, "wet", False):

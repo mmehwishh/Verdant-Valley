@@ -1,8 +1,15 @@
-"""
-world/grid.py  —  Verdant Valley
-Tile grid with baked textures (no per-frame random calls), rounded corners,
-top-face highlights, crop shadow glows, hover highlight, and season tint overlay.
-"""
+# world/grid.py  —  Verdant Valley
+# Tile grid with baked textures (no per-frame random calls), rounded corners,
+# top-face highlights, crop shadow glows, hover highlight, and season tint overlay.
+#
+# Extended with dynamic tile state for CSP-friendly domains:
+# - per-tile base_domain / domain
+# - flooded / muddy flags and flood_timer
+# - utility score (float) used by heuristics
+# - helpers: set_flooded, set_muddy, set_type, prune_for_season, prune_for_time_of_day
+# - Grid.update_tick to decrement timers and optionally run time/season pruning
+# - apply_rain updated to mark wet/muddy/flooded tiles and maintain domains
+
 
 import random
 import math
@@ -10,6 +17,80 @@ import sys
 import os
 
 import pygame
+from utils.constants import SEASON_DURATION
+
+# Load mud puddle sprite (global cache)
+MUD_PUDDLE_SPRITE = None
+def _get_mud_puddle_sprite():
+    global MUD_PUDDLE_SPRITE
+    if MUD_PUDDLE_SPRITE is not None:
+        return MUD_PUDDLE_SPRITE
+    puddle_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        "assets", "tiles", "mud_puddle.png"
+    )
+    if os.path.exists(puddle_path):
+        try:
+            img = pygame.image.load(puddle_path)
+            if pygame.display.get_surface() is not None:
+                img = img.convert_alpha()
+            # Scale to tile size if needed
+            if img.get_width() != TILE_SIZE or img.get_height() != TILE_SIZE:
+                img = pygame.transform.smoothscale(img, (TILE_SIZE, TILE_SIZE))
+            MUD_PUDDLE_SPRITE = img
+            return MUD_PUDDLE_SPRITE
+        except Exception:
+            pass
+    MUD_PUDDLE_SPRITE = None
+    return None
+
+# Load snow stone sprite (global cache)
+SNOW_STONE_SPRITE = None
+def _get_snow_stone_sprite():
+    global SNOW_STONE_SPRITE
+    if SNOW_STONE_SPRITE is not None:
+        return SNOW_STONE_SPRITE
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        "assets", "tiles", "Snow_Stone.png"
+    )
+    if os.path.exists(path):
+        try:
+            img = pygame.image.load(path)
+            if pygame.display.get_surface() is not None:
+                img = img.convert_alpha()
+            if img.get_width() != TILE_SIZE or img.get_height() != TILE_SIZE:
+                img = pygame.transform.smoothscale(img, (TILE_SIZE, TILE_SIZE))
+            SNOW_STONE_SPRITE = img
+            return SNOW_STONE_SPRITE
+        except Exception:
+            pass
+    SNOW_STONE_SPRITE = None
+    return None
+
+# Load winter snow sprite (global cache)
+WINTER_SNOW_SPRITE = None
+def _get_winter_snow_sprite():
+    global WINTER_SNOW_SPRITE
+    if WINTER_SNOW_SPRITE is not None:
+        return WINTER_SNOW_SPRITE
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        "assets", "tiles", "Winter_Snow.png"
+    )
+    if os.path.exists(path):
+        try:
+            img = pygame.image.load(path)
+            if pygame.display.get_surface() is not None:
+                img = img.convert_alpha()
+            if img.get_width() != TILE_SIZE or img.get_height() != TILE_SIZE:
+                img = pygame.transform.smoothscale(img, (TILE_SIZE, TILE_SIZE))
+            WINTER_SNOW_SPRITE = img
+            return WINTER_SNOW_SPRITE
+        except Exception:
+            pass
+    WINTER_SNOW_SPRITE = None
+    return None
 
 sys.path.insert(
     0,
@@ -25,6 +106,9 @@ from utils.constants import (
     TILE_MUD,
     TILE_WATER,
     TILE_FIELD,
+    TILE_SNOW_STONE,
+    TILE_WINTER_SNOW,
+    TILE_DARK_MUD,
     TILE_COLOR,
     TILE_HIGHLIGHT,
     TILE_SHADOW,
@@ -188,6 +272,32 @@ def _bake_water(col, row):
     return {"ripple_offset": ripple_offset}
 
 
+def _bake_snow_stone(col, row):
+    """Snow stone uses sprite — minimal bake data."""
+    return {}
+
+def _bake_dark_mud(col, row):
+    """Dark mud: heavier clumps + puddle overlay."""
+    rng = random.Random(col * 1234 + row * 89 + 42)
+    clumps = []
+    for _ in range(8):  # more clumps for dark mud
+        cx = rng.randint(3, TILE_SIZE - 5)
+        cy = rng.randint(6, TILE_SIZE - 4)
+        cw = rng.randint(6, 12)
+        ch = rng.randint(4, 8)
+        clumps.append((cx, cy, cw, ch))
+    streaks = []
+    for i in range(0, TILE_SIZE, 7):
+        ox = rng.randint(-1, 1)
+        streaks.append(i + ox)
+    return {"clumps": clumps, "streaks": streaks, "heavy": True}
+
+
+def _bake_winter_snow(col, row):
+    """Winter snow uses sprite — minimal bake data."""
+    return {}
+
+
 BAKE_FN = {
     TILE_GRASS: _bake_grass,
     TILE_DIRT: _bake_dirt,
@@ -195,6 +305,9 @@ BAKE_FN = {
     TILE_MUD: _bake_mud,
     TILE_FIELD: _bake_field,
     TILE_WATER: _bake_water,
+    TILE_SNOW_STONE: _bake_snow_stone,
+    TILE_WINTER_SNOW: _bake_winter_snow,
+    TILE_DARK_MUD: _bake_dark_mud,
 }
 
 
@@ -205,12 +318,40 @@ class Tile:
     def __init__(self, col, row, tile_type=TILE_GRASS):
         self.col = col
         self.row = row
+        # terrain/type
         self.type = tile_type
+        # crop data
         self.crop = CROP_NONE
         self.crop_stage = 0  # 0-3
+
+        # dynamic environmental flags used by CSP heuristics
         self.wet = False
         self.frozen = False
         self.managed_growth = False
+
+        # flooding/muddy state (new)
+        self.flooded = False
+        self.muddy = False
+        # ticks remaining until flood clears (0 or None = not scheduled)
+        self.flood_timer = 0
+
+        # Winter freeze: remember original tile type for restoration (store as int, not None)
+        self._pre_freeze_type = -1
+        self._rain_restore_type = -1
+        self._winter_slush = False
+        # Thaw stage: 0=normal, 1=mud_puddle, 2=dirt/mud, 3=restoring
+        self._thaw_stage = 0
+        self._thaw_timer = 0
+
+        # utility multiplier used by heuristics (0.0 - 1.0)
+        self.utility = 1.0
+
+        # domain management for CSP:
+        # base_domain is derived from self.type (what the tile would allow normally)
+        # domain is the currently-pruned list (season, night, flood, manual pruning)
+        self.base_domain = self._base_domain_for_type()
+        self.domain = list(self.base_domain)
+
         self._texture = None  # baked texture data dict
 
     def bake(self):
@@ -236,11 +377,145 @@ class Tile:
         x, y = grid_to_px(self.col, self.row)
         return pygame.Rect(x, y, TILE_SIZE, TILE_SIZE)
 
+    # ── Domain & dynamic state helpers (new) ────────────────────────────────
+
+    def _base_domain_for_type(self):
+        """Return the list of crops normally allowed for this tile type."""
+        # NOTE: Keep this conservative; CSP/season/time functions prune further.
+        if self.type in (TILE_FIELD, TILE_DIRT):
+            # Fields and dirt can host core crops
+            return [CROP_WHEAT, CROP_SUNFLOWER, CROP_CORN, CROP_NONE]
+        if self.type == TILE_GRASS:
+            # Grass supports fewer plant types (for example: flower/herb)
+            # We include corn/wheat as disallowed here to encourage CSP to prefer fields.
+            return [CROP_SUNFLOWER, CROP_NONE]
+        # Water/stone/mud have no plantable crops by default (mud still may be plantable in some rules)
+        if self.type == TILE_MUD:
+            # Mud is plantable but with lower utility; keep some crops allowed.
+            return [CROP_WHEAT, CROP_NONE]
+        # Snow tiles are not plantable
+        if self.type in (TILE_SNOW_STONE, TILE_WINTER_SNOW):
+            return [CROP_NONE]
+        return [CROP_NONE]
+
+    def set_type(self, new_type):
+        """Change tile type (keeps baked textures in sync and updates base_domain)."""
+        self.type = new_type
+        # re-bake texture for the new tile type
+        self.bake()
+        # refresh base domain & reset domain if not flooded
+        self.base_domain = self._base_domain_for_type()
+        if not self.flooded:
+            self.domain = list(self.base_domain)
+        # reset some dynamic flags sensibly
+        if new_type == TILE_WATER:
+            self.wet = True
+        else:
+            self.wet = False
+
+    def set_flooded(self, flooded: bool, duration_ticks: int | None = None):
+        """Set or clear a flooded hard-constraint. Flooded tiles' domain -> [CROP_NONE]."""
+        self.flooded = flooded
+        if flooded:
+            # hard constraint: only CROP_NONE allowed
+            self.domain = [CROP_NONE]
+            self.utility = 0.0
+            self.wet = True
+            if duration_ticks:
+                self.flood_timer = int(duration_ticks)
+        else:
+            # clear flooding and restore domain from base (season/time pruning may run later)
+            self.flood_timer = 0
+            self.flooded = False
+            # restore domain from base domain
+            self.domain = list(self.base_domain)
+            # restore utility heuristic default for type
+            if self.type == TILE_GRASS:
+                self.utility = 1.0
+            elif self.type == TILE_MUD:
+                self.utility = 0.5
+            else:
+                self.utility = 0.9
+
+    def set_muddy(self, muddy: bool):
+        """Mark/unmark muddy (non-hard) state. muddy reduces utility but keeps planting allowed."""
+        self.muddy = muddy
+        if muddy:
+            self.utility = 0.5
+            # keep domain but deprioritize via utility
+            if CROP_NONE not in self.domain:
+                # ensure CROP_NONE is always available as fallback
+                self.domain.append(CROP_NONE)
+        else:
+            # restore utility based on type
+            if self.type == TILE_GRASS:
+                self.utility = 1.0
+            elif self.type == TILE_MUD:
+                self.utility = 0.6
+            else:
+                self.utility = 0.9
+            # attempt to restore domain to base if not flooded
+            if not self.flooded:
+                self.domain = list(self.base_domain)
+
+    def restore_domain(self):
+        """Restore domain from base_domain unless flooded."""
+        if self.flooded:
+            self.domain = [CROP_NONE]
+        else:
+            self.domain = list(self.base_domain)
+
+    def prune_for_season(self, season_index: int):
+        """
+        Prune domain based on season index.
+        Convention: 0=spring, 1=summer, 2=autumn, 3=winter (matches SEASON_TINTS usage).
+        Winter removes heat-loving crops (e.g., corn).
+        """
+        if self.flooded:
+            return
+        # start from base domain and prune into domain
+        allowed = list(self.base_domain)
+        # Winter restriction: only corn is plantable.
+        if season_index == 3:
+            allowed = [v for v in allowed if v in (CROP_NONE, CROP_CORN)]
+        # other seasons could re-enable additional crops; here we simply assign allowed
+        self.domain = allowed
+
+    def prune_for_time_of_day(self, is_night: bool, distance_from_farmer: int = 0):
+        """
+        Prune domain for night cycles. Far tiles at night shouldn't host high-light crops.
+        Example: remove corn for tiles farther than a threshold at night.
+        """
+        if self.flooded:
+            return
+        if not is_night:
+            # Keep season-pruned domain during daytime.
+            return
+        # Night-time pruning:
+        allowed = list(self.domain) if self.domain else list(self.base_domain)
+        # If far from farmer, remove high-light crop (corn)
+        if distance_from_farmer > 6:
+            allowed = [v for v in allowed if v != CROP_CORN]
+            # reduce utility for distant tiles at night
+            self.utility *= 0.6
+        self.domain = allowed
+
 
 # ── Grid ──────────────────────────────────────────────────────────────────────
 
 
 class Grid:
+    def convert_flooded_to_dark_mud(self):
+        """Convert all flooded tiles to dark brown mud (TILE_DARK_MUD)."""
+        for c in range(self.cols):
+            for r in range(self.rows):
+                t = self.tiles[c][r]
+                if getattr(t, 'flooded', False):
+                    t.set_flooded(False)
+                    t.set_type(TILE_DARK_MUD)
+                    t.set_muddy(False)
+                    t.wet = False
+
     def __init__(self):
         self.cols = GRID_COLS
         self.rows = GRID_ROWS
@@ -256,9 +531,9 @@ class Grid:
         self._build_map()
         self._bake_all()
         # Cache for the season tint surface (resized only when season changes)
-        self._tint_surf_cache: dict[int, pygame.Surface] = {}
+        self._tint_surf_cache = {}
         # Hovered tile (col, row) — set by caller each frame
-        self.hovered: tuple[int, int] | None = None
+        self.hovered = None
 
     # NEW: Method to load house sprite
     def load_house_sprite(self):
@@ -344,10 +619,18 @@ class Grid:
                 self.tiles[c][13].type = TILE_STONE
 
     def _bake_all(self):
-        """Pre-compute texture data for every tile."""
+        """Pre-compute texture data for every tile and refresh base/domain state."""
         for c in range(self.cols):
             for r in range(self.rows):
-                self.tiles[c][r].bake()
+                t = self.tiles[c][r]
+                t.bake()
+                # refresh base domain according to current type
+                t.base_domain = t._base_domain_for_type()
+                # If tile is flooded, keep domain=[CROP_NONE], otherwise restore
+                if t.flooded:
+                    t.domain = [CROP_NONE]
+                else:
+                    t.domain = list(t.base_domain)
 
     # ── Accessors ─────────────────────────────────────────────────────────────
 
@@ -380,40 +663,249 @@ class Grid:
             if self.tiles[c][r].crop != CROP_NONE
         ]
 
+    def ripe_crop_tiles(self):
+        return [
+            (c, r)
+            for c in range(self.cols)
+            for r in range(self.rows)
+            if self.tiles[c][r].crop != CROP_NONE and self.tiles[c][r].crop_stage >= 2
+        ]
+
+    def generate_random_crops(self, count):
+        """Generate 'count' random crops on field tiles (no CSP)"""
+        from utils.constants import CROP_WHEAT, CROP_SUNFLOWER, CROP_CORN, CROP_TOMATO, CROP_CARROT, CROP_POTATO
+        
+        # Clear all existing crops
+        for c in range(self.cols):
+            for r in range(self.rows):
+                if self.tiles[c][r].crop != CROP_NONE:
+                    self.tiles[c][r].crop = CROP_NONE
+                    self.tiles[c][r].crop_stage = 0
+        
+        # Get list of all field tiles
+        field_tiles = [
+            (c, r)
+            for c in range(self.cols)
+            for r in range(self.rows)
+            if self.tiles[c][r].type == TILE_FIELD
+        ]
+        
+        # Randomly select tiles for crops
+        if len(field_tiles) < count:
+            count = len(field_tiles)
+        
+        selected_tiles = random.sample(field_tiles, count)
+        crop_types = [CROP_WHEAT, CROP_SUNFLOWER, CROP_CORN, CROP_TOMATO, CROP_CARROT, CROP_POTATO]
+        
+        for c, r in selected_tiles:
+            crop_type = random.choice(crop_types)
+            self.tiles[c][r].crop = crop_type
+            self.tiles[c][r].crop_stage = random.randint(1, 2)
+
+        return len(selected_tiles)
+
     # ── Rain event ────────────────────────────────────────────────────────────
 
     def apply_rain(self):
+        """
+        When rain occurs:
+        - mark many tiles wet (t.wet=True)
+        - convert susceptible Dirt/Field neighbors into MUD (existing behavior)
+        - possibly flood low-lying Field/Dirt tiles (set_flooded)
+        - set sensible flood_timer so tiles auto-unflood after a number of ticks
+        """
         new_mud = []
         for c in range(self.cols):
             for r in range(self.rows):
                 t = self.tiles[c][r]
+                # mark wet for fields and grass (visual effect & potential utility change)
+                if t.type in (TILE_FIELD, TILE_GRASS, TILE_DIRT, TILE_MUD):
+                    t.wet = True
+
+                # existing mud propagation logic
                 if t.type == TILE_MUD:
+                    # Mud automatically becomes flooded/impassable during rain.
+                    t.set_flooded(True, duration_ticks=600)
                     for dc, dr in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                         n = self.get(c + dc, r + dr)
                         if n and n.type in (TILE_DIRT, TILE_GRASS):
                             new_mud.append((c + dc, r + dr))
                 if t.type == TILE_FIELD and t.crop == CROP_NONE and random.random() < 0.05:
                     new_mud.append((c, r))
+
+                # Flooding heuristic: if tile is Field or Dirt and adjacent to water, chance to flood
+                if t.type in (TILE_FIELD, TILE_DIRT):
+                    near_water = False
+                    for dc, dr in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        neighbor = self.get(c + dc, r + dr)
+                        if neighbor is not None and neighbor.type == TILE_WATER:
+                            near_water = True
+                            break
+                    flood_chance = 0.06 if near_water else 0.01
+                    if random.random() < flood_chance:
+                        # mark flooded with a timer of 600 ticks (10 seconds at 60 FPS)
+                        t.set_flooded(True, duration_ticks=600)
+
+                # Field/Grass tiles get wet which affects rendering & utility
                 if t.type in (TILE_FIELD, TILE_GRASS):
                     t.wet = True
+
         for c, r in new_mud:
             if 0 <= c < self.cols and 0 <= r < self.rows:
-                self.tiles[c][r].type = TILE_MUD
-                self.tiles[c][r].bake()
+                tile = self.tiles[c][r]
+                if tile._rain_restore_type == -1:
+                    tile._rain_restore_type = tile.type
+                tile.set_type(TILE_MUD)
+                tile.set_muddy(True)
+                tile.set_flooded(True, duration_ticks=600)
 
     def apply_winter_freeze(self):
-        """Mark terrain as frozen (terrain-only seasonal effect)."""
+        """Apply winter visuals, then transition winter snow tiles to slushy flood/mud."""
+        rng = random.Random(42)  # deterministic snow placement
         for c in range(self.cols):
             for r in range(self.rows):
                 t = self.tiles[c][r]
-                t.frozen = t.type in (TILE_GRASS, TILE_DIRT, TILE_MUD, TILE_FIELD)
+                t.frozen = True
+                t._thaw_stage = 0
+                t._thaw_timer = 0
+                t._winter_slush = False
+
+                if t.type == TILE_WATER:
+                    pass
+
+                elif t.type == TILE_STONE:
+                    near_water = False
+                    for dc, dr in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        neighbor = self.get(c + dc, r + dr)
+                        if neighbor is not None and neighbor.type == TILE_WATER:
+                            near_water = True
+                            break
+                    if near_water:
+                        t._pre_freeze_type = TILE_STONE
+                        t.set_type(TILE_SNOW_STONE)
+
+                elif t.type in (TILE_FIELD, TILE_GRASS, TILE_DIRT):
+                    # Randomly convert farm tiles to winter snow first.
+                    if rng.random() < 0.35:
+                        t._pre_freeze_type = t.type
+                        t.crop = CROP_NONE
+                        t.crop_stage = 0
+                        t.set_type(TILE_WINTER_SNOW)
+                        # Winter_snow then becomes slushy mud/flood terrain.
+                        t._winter_slush = True
+                        t.set_type(TILE_MUD)
+                        t.set_muddy(True)
+                        t.set_flooded(True, duration_ticks=SEASON_DURATION)
+                        t.wet = True
+
+                # prune domain for winter
+                t.prune_for_season(3)
 
     def clear_winter_freeze(self):
+        """Winter end: revert winter-slush/snow tiles to their original regular terrain."""
         for c in range(self.cols):
             for r in range(self.rows):
-                self.tiles[c][r].frozen = False
+                t = self.tiles[c][r]
+                t.frozen = False
 
-    # ── Hover helper ──────────────────────────────────────────────────────────
+                if t.type == TILE_SNOW_STONE:
+                    t.set_type(TILE_STONE)
+                    t._pre_freeze_type = -1
+                    t._winter_slush = False
+
+                else:
+                    if t._winter_slush and t._pre_freeze_type != -1:
+                        t.set_flooded(False)
+                        t.set_type(t._pre_freeze_type)
+                        t.set_muddy(False)
+                        t.wet = False
+                        t._pre_freeze_type = -1
+                        t._winter_slush = False
+                    elif t._pre_freeze_type != -1:
+                        t.set_type(t._pre_freeze_type)
+                        t._pre_freeze_type = -1
+                        t._winter_slush = False
+                    if not t.flooded:
+                        t.restore_domain()
+
+    def _update_thaw(self):
+        """Tick thaw timers: mud_puddle -> dirt/mud -> original type."""
+        for c in range(self.cols):
+            for r in range(self.rows):
+                t = self.tiles[c][r]
+                if t._thaw_stage <= 0:
+                    continue
+
+                t._thaw_timer -= 1
+                if t._thaw_timer > 0:
+                    continue
+
+                if t._thaw_stage == 1:
+                    # Stage 1 done: mud_puddle -> dirt
+                    t._thaw_stage = 2
+                    t._thaw_timer = random.randint(200, 400)
+                    t.set_type(TILE_DIRT)
+                    t.set_muddy(False)
+                    t.wet = False
+
+                elif t._thaw_stage == 2:
+                    # Stage 2 done: dirt -> original type
+                    original = t._pre_freeze_type if t._pre_freeze_type is not None else TILE_GRASS
+                    t.set_type(original)
+                    t._pre_freeze_type = -1
+                    t._thaw_stage = 0
+                    t._thaw_timer = 0
+                    t.set_muddy(False)
+                    t.wet = False
+                    if not t.flooded:
+                        t.restore_domain()
+
+    # ── Tick / time helpers (new) ─────────────────────────────────────────────
+
+    def update_tick(self, tick: int, is_night: bool = False, season_index: int | None = None, farmer_pos: tuple[int, int] | None = None):
+        """
+        Call this from the main loop once per simulation tick (or at a coarser rate).
+        Responsibilities:
+         - decrement flood timers and auto-unflood when timer elapses
+         - optionally run prune_for_time_of_day and prune_for_season per tile
+        Note: the CSP solver should be invoked from main when you want to recompute planting plan
+              after domain changes. This function only updates per-tile domains/flags.
+        """
+        # Decrement flood timers and auto-convert floods to dark mud when timer expires
+        for c in range(self.cols):
+            for r in range(self.rows):
+                t = self.tiles[c][r]
+                if getattr(t, "flood_timer", 0):
+                    t.flood_timer -= 1
+                    if t.flood_timer <= 0 and t.flooded:
+                        # Rain flood reverts to original regular tile after 10 seconds.
+                        if t._winter_slush:
+                            # Winter slush remains blocked until winter ends.
+                            t.flood_timer = 1
+                            continue
+                        t.set_flooded(False)
+                        if t._rain_restore_type != -1:
+                            t.set_type(t._rain_restore_type)
+                            t._rain_restore_type = -1
+                        elif t.type == TILE_MUD:
+                            t.set_type(TILE_DIRT)
+                        t.set_muddy(False)
+                        t.wet = False
+
+        # Prune per-tile domains for time-of-day and season if requested
+        for c in range(self.cols):
+            for r in range(self.rows):
+                t = self.tiles[c][r]
+                # distance-from-farmer heuristic for night pruning
+                dist = 0
+                if farmer_pos:
+                    fx, fy = farmer_pos
+                    dist = abs(fx - c) + abs(fy - r)
+                if season_index is not None:
+                    t.prune_for_season(season_index)
+                t.prune_for_time_of_day(is_night, dist)
+
+    # ─�� Hover helper ──────────────────────────────────────────────────────────
 
     def update_hover(self, mouse_pos):
         """Call each frame with pygame.mouse.get_pos()."""
@@ -455,10 +947,13 @@ class Grid:
         )
         surface.blit(shadow_surf, (shadow_rect.x, shadow_rect.y))
 
-        # ── Draw tiles ────────────────────────────────────────────────────────
+        # ── Draw tiles ───────────────────────────────────────────────────────
         for c in range(self.cols):
             for r in range(self.rows):
                 self._draw_tile(surface, self.tiles[c][r], tick)
+
+        # draw buildings after tiles (so they appear on top)
+        self.draw_buildings(surface)
 
         # ── Hover highlight (drawn on top of tiles) ───────────────────────────
         if self.hovered:
@@ -508,6 +1003,12 @@ class Grid:
         # ── Base fill ─────────────────────────────────────────────────────────
         pygame.draw.rect(surface, base, tile_rect, border_radius=TILE_RADIUS)
 
+        # overlay for flooded tiles (visual cue)
+        if getattr(t, "flooded", False):
+            flood_overlay = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+            flood_overlay.fill((30, 90, 160, 90))
+            surface.blit(flood_overlay, (x, y))
+
         # ── Top-face highlight strip (baked, not random) ──────────────────────
         hi_surf = pygame.Surface((TILE_SIZE, 10), pygame.SRCALPHA)
         hi_surf.fill((0, 0, 0, 0))
@@ -532,22 +1033,36 @@ class Grid:
             pygame.draw.circle(surface, (200, 200, 165), (x + px, y + py), 2)
 
         elif t.type == TILE_WATER:
-            ripple = tx.get("ripple_offset", 0)
-            for i in range(-4, TILE_SIZE + 4, 6):
-                wave = int(3 * math.sin((tick * 0.07 + ripple + i) * 0.2))
-                pygame.draw.arc(
-                    surface,
-                    (50, 130, 210),
-                    (x + i, y + 9 + wave, 12, 8),
-                    math.pi,
-                    2 * math.pi,
-                    2,
-                )
-            # Shimmer dot
-            shimmer_alpha = int(80 + 60 * math.sin(tick * 0.13 + t.col))
-            sh_dot = pygame.Surface((4, 4), pygame.SRCALPHA)
-            pygame.draw.circle(sh_dot, (200, 230, 255, shimmer_alpha), (2, 2), 2)
-            surface.blit(sh_dot, (x + 20, y + 6))
+            if getattr(t, "frozen", False):
+                # Ice rendering — light blue solid with cracks
+                ice_base = (180, 210, 240)
+                ice_hi = (220, 240, 255)
+                pygame.draw.rect(surface, ice_base, (x, y, TILE_SIZE, TILE_SIZE), border_radius=TILE_RADIUS)
+                # Ice sheen
+                sheen = pygame.Surface((TILE_SIZE, TILE_SIZE // 2), pygame.SRCALPHA)
+                sheen.fill((255, 255, 255, 30))
+                surface.blit(sheen, (x, y))
+                # Cracks
+                cx, cy = x + TILE_SIZE // 2, y + TILE_SIZE // 2
+                pygame.draw.line(surface, ice_hi, (cx - 8, cy - 5), (cx + 6, cy + 3), 1)
+                pygame.draw.line(surface, ice_hi, (cx + 2, cy - 7), (cx - 3, cy + 8), 1)
+            else:
+                ripple = tx.get("ripple_offset", 0)
+                for i in range(-4, TILE_SIZE + 4, 6):
+                    wave = int(3 * math.sin((tick * 0.07 + ripple + i) * 0.2))
+                    pygame.draw.arc(
+                        surface,
+                        (50, 130, 210),
+                        (x + i, y + 9 + wave, 12, 8),
+                        math.pi,
+                        2 * math.pi,
+                        2,
+                    )
+                # Shimmer dot
+                shimmer_alpha = int(80 + 60 * math.sin(tick * 0.13 + t.col))
+                sh_dot = pygame.Surface((4, 4), pygame.SRCALPHA)
+                pygame.draw.circle(sh_dot, (200, 230, 255, shimmer_alpha), (2, 2), 2)
+                surface.blit(sh_dot, (x + 20, y + 6))
 
         elif t.type == TILE_FIELD:
             # Furrow lines (fixed positions)
@@ -642,8 +1157,80 @@ class Grid:
                     (x + streak_x + 4, y + 14),
                     1,
                 )
+            # Use puddle sprite if wet or flooded
+            if getattr(t, "wet", False) or getattr(t, "flooded", False):
+                puddle_img = _get_mud_puddle_sprite()
+                if puddle_img:
+                    # Optionally randomize rotation/flip for variety
+                    rng = random.Random(t.col * 100 + t.row)
+                    img = puddle_img
+                    if rng.choice([True, False]):
+                        img = pygame.transform.flip(img, True, False)
+                    angle = rng.choice([0, 90, 180, 270])
+                    if angle:
+                        img = pygame.transform.rotate(img, angle)
+                    surface.blit(img, (x, y))
+                else:
+                    # fallback: draw blue puddle as before
+                    pud_surf = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+                    puddle_color = (110, 130, 160, 210)
+                    pygame.draw.ellipse(pud_surf, puddle_color, (4, 8, TILE_SIZE-8, TILE_SIZE-12))
+                    surface.blit(pud_surf, (x, y))
 
-        # ── Water edge blending ────────────────────────────────────────────────
+        elif t.type == TILE_DARK_MUD:
+            # Darker streaks + heavy clumps
+            tx_dark = t.texture or _bake_dark_mud(t.col, t.row)
+            heavy = tx_dark.get("heavy", False)
+            # Dark streaks
+            for streak_x in tx_dark.get("streaks", []):
+                pygame.draw.line(
+                    surface,
+                    (50, 28, 10),  # darker than mud
+                    (x + streak_x, y + 10),
+                    (x + streak_x + 5, y + 16),
+                    2,
+                )
+            # Heavy mud clumps
+            for cx, cy, cw, ch in tx_dark.get("clumps", []):
+                clump_color = (45, 25, 10)
+                pygame.draw.ellipse(surface, clump_color, (x + cx, y + cy, cw, ch))
+                # Clump highlight
+                pygame.draw.ellipse(surface, (70, 45, 25), (x + cx + 1, y + cy + 1, cw//2, ch//2))
+            # Always puddle overlay on dark mud (post-flood look)
+            puddle_img = _get_mud_puddle_sprite()
+            if puddle_img:
+                rng = random.Random(t.col * 200 + t.row * 3)
+                img = puddle_img
+                if rng.choice([True, False]):
+                    img = pygame.transform.flip(img, True, False)
+                surface.blit(img, (x + 2, y + 4))
+            else:
+                # Darker puddle fallback
+                pud_surf = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+                puddle_color = (80, 60, 30, 220)  # dark brown puddle
+                pygame.draw.ellipse(pud_surf, puddle_color, (6, 10, TILE_SIZE-12, TILE_SIZE-16))
+                surface.blit(pud_surf, (x, y))
+
+        elif t.type == TILE_SNOW_STONE:
+            sprite = _get_snow_stone_sprite()
+            if sprite:
+                surface.blit(sprite, (x, y))
+            else:
+                # Fallback: white-tinted stone
+                pygame.draw.rect(surface, (200, 210, 220), tile_rect, border_radius=TILE_RADIUS)
+                pygame.draw.circle(surface, (230, 235, 240), (x + TILE_SIZE // 2, y + TILE_SIZE // 2), 12)
+
+        elif t.type == TILE_WINTER_SNOW:
+            sprite = _get_winter_snow_sprite()
+            if sprite:
+                surface.blit(sprite, (x, y))
+            else:
+                # Fallback: light snow color
+                pygame.draw.rect(surface, (220, 230, 245), tile_rect, border_radius=TILE_RADIUS)
+                # Small snow mound
+                pygame.draw.ellipse(surface, (240, 245, 255), (x + 8, y + 12, TILE_SIZE - 16, TILE_SIZE - 20))
+
+        # ── Water edge blending ───────────────────────────────────────────────
         if t.type == TILE_WATER:
             for dc, dr, rx, ry, rw, rh in [
                 (-1, 0, 0, 0, 6, TILE_SIZE),
@@ -684,7 +1271,14 @@ class Grid:
 
         if getattr(t, "frozen", False) and t.type != TILE_WATER:
             frost = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
-            frost.fill((210, 235, 255, 35))
+            frost.fill((210, 235, 255, 50))
+            # Snow dots
+            import random as _rng
+            seed = t.col * 31 + t.row * 17
+            for i in range(4):
+                sx = (seed * (i + 1) * 7) % (TILE_SIZE - 4) + 2
+                sy = (seed * (i + 1) * 13) % (TILE_SIZE - 4) + 2
+                pygame.draw.circle(frost, (240, 248, 255, 90), (sx, sy), 2)
             surface.blit(frost, (x, y))
 
     # ── Crop drawing ──────────────────────────────────────────────────────────

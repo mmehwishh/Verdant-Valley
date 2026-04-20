@@ -21,6 +21,8 @@ class SeasonManager:
         self.time_of_day = "Day"
         self.is_night = False
         self.night_alpha = 0
+        self.last_rain_tick = 0
+        self.last_flood_to_mud_tick = 0
 
     @property
     def name(self):
@@ -30,9 +32,9 @@ class SeasonManager:
     def progress(self):
         return min(1.0, self.tick / SEASON_DURATION)
 
-    def update(self, grid):
+    def update(self, grid, clock=None):
         self.tick += 1
-        self._update_day_night()
+        flipped = self._update_day_night()
 
         # Grow crops each 120 ticks
         if self.tick % 120 == 0:
@@ -44,12 +46,16 @@ class SeasonManager:
                     if t.crop != CROP_NONE and t.crop_stage < 3:
                         t.crop_stage += 1
 
-        # Random rain every ~18 seconds in summer
-        if self.name == "☀️ Summer" and self.tick % (18 * FPS) == 0:
-            self.rain_active = True
-            self.rain_timer = 4 * FPS
-            grid.apply_rain()
+        # --- Season change every SEASON_DURATION ---
+        if self.tick >= SEASON_DURATION:
+            self._advance(grid)
 
+        # --- Auto rain every 60 seconds ---
+        if clock and clock.seconds - self.last_rain_tick >= 60:
+            self.trigger_rain(grid)
+            self.last_rain_tick = clock.seconds
+
+        # Rain timer logic
         if self.rain_active:
             self.rain_timer -= 1
             if self.rain_timer <= 0:
@@ -58,9 +64,12 @@ class SeasonManager:
         # Seasonal bloom pulse for UI shine
         self.bloom = abs(math.sin(self.tick * 0.02))
 
-        # Season end
-        if self.tick >= SEASON_DURATION:
-            self._advance(grid)
+        return flipped
+
+    def trigger_rain(self, grid):
+        self.rain_active = True
+        self.rain_timer = 10 * FPS  # 10 seconds of rain
+        grid.apply_rain()
 
     def advance_manual(self, grid):
         """Manually force the next season while preserving runtime flow."""
@@ -68,7 +77,7 @@ class SeasonManager:
 
     def _advance(self, grid):
         self.tick = 0
-        self.index += 1
+        self.index = (self.index + 1) % len(SEASONS)
         # Reset rain/wet status at season boundaries
         self.rain_active = False
         self.rain_timer = 0
@@ -98,9 +107,15 @@ class SeasonManager:
         night_level = max(0.0, (night_level_raw - 0.50) / 0.50)
 
         self.night_alpha = int(night_level * 130)
-        self.is_night = cycle_pos >= (self.day_night_cycle // 2)
+        
+        new_is_night = cycle_pos >= (self.day_night_cycle // 2)
+        flipped = (new_is_night != self.is_night)
+        
+        self.is_night = new_is_night
         self.time_of_day = "Night" if self.is_night else "Day"
         self.day_count = (self.tick // self.day_night_cycle) + 1
+        
+        return flipped
 
     def time_label(self):
         secs_left = max(0, (SEASON_DURATION - self.tick) // FPS)

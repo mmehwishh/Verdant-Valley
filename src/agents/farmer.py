@@ -2,6 +2,8 @@
 src/agents/farmer.py - Farmer Agent — full functionality
   - Terrain: walks mud/dirt/grass/field, blocked by water & stone
   - Plant mode: triggered externally via farmer.trigger_planting()
+  - Manual planting: farmer.plant_selected_crops(crop_id, count)
+      → farmer physically walks to each tile and plants, then auto-harvests
   - Crop growth: ticks over time per planted tile
   - Harvest: auto-harvests stage-2 crops using A*
 """
@@ -9,43 +11,34 @@ src/agents/farmer.py - Farmer Agent — full functionality
 import random
 from .base_agent import Agent
 from src.algorithms.astar import astar
+from src.algorithms.csp import CROP_HEURISTIC_VALUE
 from utils.constants import *
-from utils.helpers import manhattan
+from utils.helpers import manhattan, tile_center
 
 
 def _animal_aware_cost(tile, base_cost, agents, animal_avoidance_radius=2):
     """Add cost penalty for tiles near animals."""
     if base_cost == float('inf'):
         return float('inf')
-    
     if not agents:
         return base_cost
-    
     animals = [a for a in agents if hasattr(a, 'name') and 'Animal' in a.name and a.alive]
     if not animals:
         return base_cost
-    
     tile_pos = (tile.col, tile.row)
     min_dist = min(manhattan(tile_pos, (a.col, a.row)) for a in animals)
-    
     if min_dist <= 1:
         return float('inf')
     elif min_dist <= animal_avoidance_radius:
         return base_cost + 20
-    
     return base_cost
 
 
-# ── Terrain passability ────────────────────────────────────────────────────
-# Stone and water are impassable for the farmer.
-# This dict is read by your A* cost function — make sure astar() calls
-# grid.get(c,r).move_cost and returns float('inf') for impassable tiles.
-
 # Planting score: how desirable is each tile type for planting?
 PLANT_TILE_SCORE = {
-    TILE_FIELD: 3.0,  # best — purpose-built farmland
-    TILE_MUD: 2.0,  # decent
-    TILE_DIRT: 1.0,  # okay
+    TILE_FIELD: 3.0,
+    TILE_MUD:   2.0,
+    TILE_DIRT:  1.0,
 }
 
 # Crops cycle through stages 0 (seed) → 1 (sprout) → 2 (ripe)
@@ -79,12 +72,30 @@ else:
     DEFAULT_CROP_GROWTH_TICKS = (180, 300)
 
 
+
 class Farmer(Agent):
+
+
+    def show_blocked_cross(self, surface, grid):
+        """Draw a cross on the last failed tile if timer is active."""
+        if getattr(self, '_failed_plant_tile', None) is not None and getattr(self, '_failed_plant_timer', 0) > 0:
+            from game_ui.game_ui import draw_blocked_tile_cross
+            tile = self._failed_plant_tile
+            if isinstance(tile, tuple) and len(tile) == 2:
+                col, row = tile
+                draw_blocked_tile_cross(surface, col, row, grid)
+
     """
     AI Farmer — harvests ripe crops and plants new ones on command.
 
-    External API:
-        farmer.trigger_planting()   — call this from your UI button handler
+    External API
+    ------------
+    farmer.trigger_planting()
+        Plant one crop on the farmer's current tile (button / G key).
+
+    farmer.plant_selected_crops(crop_id, count)
+        Queue *count* tiles of *crop_id*.  Farmer physically walks to each
+        tile, plants, then automatically switches back to harvest mode.
     """
 
     def __init__(self, col, row):
@@ -105,12 +116,8 @@ class Farmer(Agent):
             except Exception:
                 pass
 
-        super().__init__(
-            col,
-            row,
-            C_FARMER,
-            speed=2.0,
-            name="Farmer",
+        Agent.__init__(
+            self, col, row, C_FARMER, speed=2.0, name="Farmer",
             sprite_sheet_path=path if os.path.exists(path) else None,
             frame_size=(frame_w, frame_h),
             animation_rows=rows,
@@ -133,81 +140,121 @@ class Farmer(Agent):
         self.target = None
         self.replan_cd = 0
         self.harvest_count = 0
-        self.plant_count = 0
+        self.plant_count   = 0
+        self.harvested_count = 0
 
-        # Planting mode — set True by trigger_planting(), cleared after done
+        # Single-tile plant (G key / button)
         self._plant_requested = False
-        self._planting_mode = False
-        self._plant_queue = []  # list of (col, row) tiles to plant
+
+        # Autonomous multi-tile planting (manual-select mode)
+        self._planting_mode   = False
+        self._plant_queue = []
+        self._plant_crop_id   = CROP_WHEAT      # crop to use in autonomous mode
 
         # Growth timers: {(col, row): ticks_at_current_stage}
-        self._growth_timers: dict[tuple, int] = {}
-        
-        # Failed planting indicator - shows red cross when planting fails
-        self._failed_plant_tile = None
-        self._failed_plant_timer = 0  # ticks to show indicator (60 ticks = 1 second)
+        self._growth_timers = {}
+
+        # Failed-plant indicator
+        self._failed_plant_tile  = None
+        self._failed_plant_timer = 0
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def trigger_planting(self):
-        """Call from your UI 'Plant Crops' button handler."""
+        """Plant one crop on the farmer's current tile (G key / UI button)."""
         if self._planting_mode:
             return
         self._plant_requested = True
-        print("🌱 Farmer: planting requested")
+
+    def plant_selected_crops(self, crop_id: int, count: int):
+        """
+        Begin autonomous planting mode.
+        The farmer will walk to *count* suitable tiles and plant *crop_id*,
+        then automatically resume harvesting.
+
+        Called by main.py after the user confirms Manual Select in the popup.
+        """
+        self._plant_crop_id = crop_id
+        self._plant_queue   = []        # will be populated during first _update_planting call
+        self._planting_mode = True
+        self._pending_count = count     # how many tiles still to queue
+        self._tiles_planted = 0
+        self.state = "planting"
+        print(f"🌱 Farmer entering manual planting mode: {count}× {CROP_NAMES[crop_id]}")
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _tile_passable(self, tile) -> bool:
-        """True if the farmer can walk on this tile type."""
-        return tile is not None and FARMER_COSTS.get(tile.type, 1.0) != float('inf')
+        return tile is not None and FARMER_COSTS.get(tile.type, float('inf')) != float('inf')
 
-    def _pick_harvest_target(self, grid, agents):
-        """Highest-utility ripe (stage=2) crop, weighted by value/distance, avoiding animals."""
-        best_score = -1
-        best_tile = None
+    def _can_step(self, grid, col, row):
+        """Override: farmer cannot step on water, stone, snow_stone."""
+        return self._tile_passable(grid.get(col, row))
 
-        # Get list of active animals
+    def _ensure_valid_position(self, grid):
+        """If farmer is on an impassable tile, teleport to nearest valid one."""
+        tile = grid.get(self.col, self.row)
+        if self._tile_passable(tile):
+            return
+        for radius in range(1, 6):
+            for dc in range(-radius, radius + 1):
+                for dr in range(-radius, radius + 1):
+                    if abs(dc) + abs(dr) != radius:
+                        continue
+                    nc, nr = self.col + dc, self.row + dr
+                    t = grid.get(nc, nr)
+                    if self._tile_passable(t):
+                        self.col, self.row = nc, nr
+                        cx, cy = tile_center(self.col, self.row)
+                        self.x = float(cx)
+                        self.y = float(cy)
+                        self.path = []
+                        self.path_idx = 0
+                        self.moving = False
+                        return
+
+    # ...existing code...
+
+    def _move_along_path(self, grid=None):
+        """Override: show red cross when farmer is blocked by an impassable tile mid-path."""
+        if grid is not None and self.path and self.path_idx < len(self.path):
+            tc, tr = self.path[self.path_idx]
+            if not self._can_step(grid, tc, tr):
+                self._show_failed_plant((tc, tr))
+        super()._move_along_path(grid)
+
+    def _pick_harvest_target(self, grid, agents, season_mgr=None):
+        best_score, best_tile = -1, None
         animals = [a for a in agents if hasattr(a, 'name') and 'Animal' in a.name and a.alive]
 
         for c, r in grid.crop_tiles():
             tile = grid.get(c, r)
             if tile is None or tile.crop == CROP_NONE or tile.crop_stage < 2:
                 continue
-            if not self._tile_passable(tile):
+            # Use A* with rain logic to check reachability
+            rain_active = season_mgr.rain_active if season_mgr else False
+            result = astar(grid, (self.col, self.row), (c, r), agent_type="Farmer", rain_active=rain_active)
+            if not getattr(result, 'path', None):
                 continue
-
             value = CROP_VALUE[tile.crop]
-            dist = manhattan((self.col, self.row), (c, r)) + 1
-
-            # Calculate animal avoidance penalty
+            dist  = manhattan((self.col, self.row), (c, r)) + 1
             animal_penalty = 0
             min_animal_dist = float('inf')
-            for animal in animals:
-                animal_dist = manhattan((c, r), (animal.col, animal.row))
-                min_animal_dist = min(min_animal_dist, animal_dist)
-
-                # Extra penalty for being near the bear (destructive animal)
-                if hasattr(animal, 'name') and 'Bear' in animal.name:
-                    if animal_dist <= 3:  # Bear within 3 tiles
-                        animal_penalty += 50  # Heavy penalty
-                    elif animal_dist <= 5:  # Bear within 5 tiles
-                        animal_penalty += 20  # Moderate penalty
-
-            # General animal avoidance
+            for a in animals:
+                d = manhattan((c, r), (a.col, a.row))
+                min_animal_dist = min(min_animal_dist, d)
+                if hasattr(a, 'name') and 'Bear' in a.name:
+                    animal_penalty += 50 if d <= 3 else (20 if d <= 5 else 0)
             if min_animal_dist <= 2:
-                animal_penalty += 30  # High penalty for any animal within 2 tiles
+                animal_penalty += 30
             elif min_animal_dist <= 4:
-                animal_penalty += 10  # Moderate penalty for any animal within 4 tiles
-
+                animal_penalty += 10
             score = (value * tile.crop_stage) / dist - animal_penalty
-
             if score > best_score:
-                best_score = score
-                best_tile = (c, r)
+                best_score, best_tile = score, (c, r)
         return best_tile
 
-    def _pick_plant_tiles(self, grid, agents) -> list[tuple[int, int]]:
+    def _pick_plant_tiles(self, grid, agents, count, season_mgr=None):
         """
         Find plantable tiles sorted by desirability score:
           - tile must be TILE_FIELD / MUD / DIRT
@@ -215,51 +262,47 @@ class Farmer(Agent):
           - must be reachable (A* sanity check skipped here — done at path time)
           - bonus for being adjacent to a water tile
           - avoid planting near animals
-        Returns all candidates sorted by desirability.
+        Return up to *count* best plantable tiles sorted by desirability.
+        Prefers TILE_FIELD > MUD > DIRT, water adjacency bonus, animal avoidance.
         """
         candidates = []
-
-        # Get list of active animals
         animals = [a for a in agents if hasattr(a, 'name') and 'Animal' in a.name and a.alive]
+
+        target_crop = self._plant_crop_id if getattr(self, '_plant_crop_id', None) is not None else CROP_SUNFLOWER
 
         for c in range(grid.cols):
             for r in range(grid.rows):
                 tile = grid.get(c, r)
-                if tile is None:
-                    continue
-                if tile.type not in PLANT_TILE_SCORE:
+                if tile is None or tile.type not in PLANT_TILE_SCORE:
                     continue
                 if tile.crop != CROP_NONE:
-                    continue  # already has a crop
+                    continue
                 if (c, r) in self._growth_timers:
-                    continue  # seed planted, waiting to emerge
+                    continue
+                    
+                domain = getattr(tile, 'domain', [CROP_NONE])
+                if CROP_NONE in domain and len(domain) == 1:
+                    continue  # flooded/hard-constrained
+                if target_crop not in domain and target_crop != CROP_NONE:
+                    continue
 
-                base = PLANT_TILE_SCORE[tile.type]
+                value = CROP_HEURISTIC_VALUE.get(target_crop, 1.0) * getattr(tile, 'utility', 1.0)
 
-                # Water adjacency bonus
-                water_bonus = 0.0
-                for dc, dr in ((0, 1), (0, -1), (1, 0), (-1, 0)):
-                    nb = grid.get(c + dc, r + dr)
-                    if nb and nb.type == TILE_WATER:
-                        water_bonus = 1.5
+                animal_penalty = 0.0
+                for a in animals:
+                    d = manhattan((c, r), (a.col, a.row))
+                    if d <= 3:
+                        animal_penalty = 2.0
                         break
-
-                # Animal avoidance penalty
-                animal_penalty = 0
-                for animal in animals:
-                    animal_dist = manhattan((c, r), (animal.col, animal.row))
-                    if animal_dist <= 3:  # Avoid planting within 3 tiles of any animal
-                        animal_penalty = 2.0  # Heavy penalty
-                        break
-                    elif animal_dist <= 5:  # Moderate penalty within 5 tiles
+                    elif d <= 5:
                         animal_penalty = 1.0
 
-                dist = manhattan((self.col, self.row), (c, r)) + 1
-                score = (base + water_bonus) / dist - animal_penalty
+                dist  = manhattan((self.col, self.row), (c, r)) + 1
+                score = value - (0.1 * dist) - animal_penalty
                 candidates.append((score, c, r))
 
         candidates.sort(reverse=True)
-        return [(c, r) for _, c, r in candidates]
+        return [(c, r) for _, c, r in candidates[:count]]
 
     def _choose_crop_for_tile(self, grid, c, r) -> int:
         """Pick the best crop for this tile (field → sunflower, mud → corn, dirt → wheat)."""
@@ -271,12 +314,15 @@ class Farmer(Agent):
         return CROP_WHEAT
 
     def _plant_at(self, grid, c, r, crop=None):
-        """Actually plant a seed on tile (c, r)."""
+        """Actually place a seed on tile (c, r)."""
         tile = grid.get(c, r)
         if tile is None or tile.type not in PLANT_TILE_SCORE:
             return
         if crop is None:
-            crop = self._choose_crop_for_tile(grid, c, r)
+            if self._planting_mode and self._plant_crop_id is not None:
+                crop = self._plant_crop_id
+            else:
+                crop = self._choose_crop_for_tile(grid, c, r)
         tile.crop = crop
         tile.crop_stage = 0  # stage 0 = seed / just planted
         tile.managed_growth = True
@@ -285,23 +331,22 @@ class Farmer(Agent):
         print(f"🌱 Farmer planted {CROP_NAMES[crop]} at ({c},{r})")
 
     def _harvest(self, grid):
-        """Harvest ripe crop at current tile, if any."""
         tile = grid.get(self.col, self.row)
         if tile and tile.crop != CROP_NONE and tile.crop_stage >= 2:
             crop_name = CROP_NAMES[tile.crop]
-            value = 10
+            value = CROP_VALUE[tile.crop] * tile.crop_stage
             self.score += value
             self.harvest_count += 1
+            self.harvested_count += 1
             print(f"🌾 Farmer harvested {crop_name}! +{value}  total={self.score}")
-            tile.crop = CROP_NONE
+            tile.crop       = CROP_NONE
             tile.crop_stage = 0
             tile.managed_growth = False
             self._growth_timers.pop((self.col, self.row), None)
             self.target = None
-            self.state = "harvesting"
+            self.state  = "harvesting"
 
     def _tick_growth(self, grid):
-        """Advance crop growth timers for all planted tiles."""
         done = []
         for (c, r), ticks in self._growth_timers.items():
             tile = grid.get(c, r)
@@ -312,7 +357,6 @@ class Farmer(Agent):
                 continue
             ticks += 1
             self._growth_timers[(c, r)] = ticks
-
             grow = CROP_GROWTH_TICKS.get(tile.crop, DEFAULT_CROP_GROWTH_TICKS)
             if tile.crop_stage == 0 and ticks >= grow[0]:
                 tile.crop_stage = 1
@@ -321,65 +365,103 @@ class Farmer(Agent):
                 tile.crop_stage = 2
                 tile.managed_growth = False
                 print(f"🌻 Crop ripe at ({c},{r})!")
-                done.append((c, r))  # stop tracking once ripe
-
+                done.append((c, r))
         for key in done:
             self._growth_timers.pop(key, None)
 
-    # ── Planting flow ─────────────────────────────────────────────────────────
+    # ── Single-tile plant (G key / button) ───────────────────────────────────
 
     def _try_plant_current_tile(self, grid):
-        """Try to plant a seed on the tile the farmer is currently standing on."""
         self._plant_requested = False
-        
         tile = grid.get(self.col, self.row)
         if tile is None:
-            print("🌱 Farmer: no tile here to plant on")
-            self._show_failed_plant()
-            return
-            
+            self._show_failed_plant(); return
         if tile.type not in PLANT_TILE_SCORE:
             print(f"🌱 Farmer: cannot plant on {tile.type} tile")
-            self._show_failed_plant()
-            return
-            
+            self._show_failed_plant(); return
         if tile.crop != CROP_NONE:
             print("🌱 Farmer: tile already has a crop")
-            self._show_failed_plant()
-            return
-            
+            self._show_failed_plant(); return
         if (self.col, self.row) in self._growth_timers:
             print("🌱 Farmer: tile already growing something")
+            self._show_failed_plant(); return
+
+        domain = getattr(tile, 'domain', [CROP_NONE])
+        if CROP_NONE in domain and len(domain) == 1:
+            print("🌱 Farmer: tile is flooded/blocked by domain")
             self._show_failed_plant()
             return
             
-        # Plant a random crop on this tile
-        crop = random.choice([CROP_WHEAT, CROP_SUNFLOWER, CROP_CORN, CROP_TOMATO, CROP_CARROT, CROP_POTATO])
-        self._plant_at(grid, self.col, self.row, crop)
-        print(f"🌱 Farmer planted {CROP_NAMES[crop]} at ({self.col},{self.row})")
-    
+        allowed_crops = [c for c in domain if c != CROP_NONE]
+        if not allowed_crops:
+            print("🌱 Farmer: no suitable crops for this tile")
+            self._show_failed_plant()
+            return
+
+        # Pick best crop allowed by domain using heuristic * utility
+        best_crop = allowed_crops[0]
+        best_score = -float("inf")
+        for c in allowed_crops:
+            score = CROP_HEURISTIC_VALUE.get(c, 1.0) * getattr(tile, 'utility', 1.0)
+            if score > best_score:
+                best_score = score
+                best_crop = c
+
+        self._plant_at(grid, self.col, self.row, best_crop)
+        print(f"🌱 Farmer planted {CROP_NAMES[best_crop]} at ({self.col},{self.row})")
+
     def _show_failed_plant(self, tile_pos=None):
         """Mark this tile as failed plant attempt (shows red cross for 1 second)."""
         self._failed_plant_tile = tile_pos if tile_pos is not None else (self.col, self.row)
         self._failed_plant_timer = 60  # Show for 60 ticks at 60fps = 1 second
 
-    def _update_planting(self, grid, agents):
-        """Navigate to the next tile in the plant queue and plant it."""
+    def update_failed_plant_timer(self):
+        if self._failed_plant_timer > 0:
+            self._failed_plant_timer -= 1
+        if self._failed_plant_timer == 0:
+            self._failed_plant_tile = None
+
+    # ── Autonomous multi-tile planting ────────────────────────────────────────
+
+    def _update_planting(self, grid, agents, season_mgr=None):
+        """
+        Drive the autonomous planting loop:
+          1. If queue is empty, pick best tiles (up to _pending_count).
+          2. Walk to next tile, plant, pop queue.
+          3. When done, switch back to idle / harvest mode.
+        """
+        # --- Populate queue if empty and we still have tiles to plant ---
+        if not self._plant_queue and hasattr(self, '_pending_count') and self._pending_count > 0:
+            new_tiles = self._pick_plant_tiles(grid, agents, self._pending_count, season_mgr)
+            # Filter out tiles that already have crops or are being grown
+            if not new_tiles:
+                new_tiles = []
+            new_tiles = [
+                (c, r) for c, r in new_tiles
+                if grid.get(c, r) and grid.get(c, r).crop == CROP_NONE
+                and (c, r) not in self._growth_timers
+            ]
+            self._plant_queue = new_tiles
+            self._pending_count = 0     # consumed
+
+        # --- Filter stale entries ---
         self._plant_queue = [
-            (c, r)
-            for c, r in self._plant_queue
+            (c, r) for c, r in self._plant_queue
             if grid.get(c, r)
             and grid.get(c, r).crop == CROP_NONE
             and (c, r) not in self._growth_timers
         ]
 
+        # --- Done? ---
         if not self._plant_queue:
             self._planting_mode = False
+            self._pending_count = 0
+            self.state  = "idle"
             self.target = None
-            self.state = "idle"
-            print("✅ Farmer finished planting")
+            print(f"✅ Farmer finished manual planting ({self._tiles_planted} tiles)")
             return
 
+        # --- Navigate to next tile ---
         next_tile = self._plant_queue[0]
         next_tile_obj = grid.get(*next_tile)
         if next_tile_obj is None or next_tile_obj.type not in PLANT_TILE_SCORE:
@@ -388,13 +470,16 @@ class Farmer(Agent):
             return
 
         if (self.col, self.row) == next_tile:
-            self._plant_at(grid, *next_tile)
+            self._plant_at(grid, *next_tile, self._plant_crop_id)
+            self._tiles_planted += 1
             self._plant_queue.pop(0)
             self.moving = False
             return
 
         if not self.moving or self.replan_cd == 0:
-            path, explored = self._find_path_with_animal_avoidance(grid, agents, next_tile)
+            # Try to get rain_active from season_mgr if available
+            rain_active = season_mgr.rain_active if season_mgr else False
+            path, explored = self._find_path_with_animal_avoidance(grid, agents, next_tile, rain_active=rain_active)
             if path:
                 self.set_path(path, explored)
                 self.replan_cd = 60
@@ -404,68 +489,58 @@ class Farmer(Agent):
                 self._plant_queue.pop(0)
             return
 
-    def _find_path_with_animal_avoidance(self, grid, agents, target):
-        """Find path to target, avoiding tiles near animals."""
+    def _find_path_with_animal_avoidance(self, grid, agents, target, rain_active=False):
+        """Find path to target, avoiding tiles near animals and respecting rain blocking logic."""
         def cost_with_animal_avoidance(tile):
+            # Handle callable cost_dict properly in astar
             base = FARMER_COSTS.get(tile.type, 1.0)
             return _animal_aware_cost(tile, base, agents, animal_avoidance_radius=2)
-
-        result = astar(grid, (self.col, self.row), target, cost_with_animal_avoidance)
-        return result.path, result.explored if result.path else None
+        # Use updated astar logic for rain (muddy/flooded impassable), regular season logic unchanged
+        result = astar(grid, (self.col, self.row), target, cost_dict=cost_with_animal_avoidance, agent_type="Farmer", rain_active=rain_active)
+        return result.path, (result.explored if result.path else None)
 
     # ── Main update ───────────────────────────────────────────────────────────
 
-    def update(self, grid, agents):
-        super().update(grid, agents)
+    def update(self, grid, agents, season_mgr=None):
+        self._ensure_valid_position(grid)
+        Agent.update(self, grid, agents, season_mgr)
         self.replan_cd = max(0, self.replan_cd - 1)
-        
-        # Update failed plant timer
+
         if self._failed_plant_timer > 0:
             self._failed_plant_timer -= 1
 
-        # Always tick growth, harvest if standing on ripe crop
         self._tick_growth(grid)
         self._harvest(grid)
 
-        # Start planting mode only when explicitly requested by the player.
+        # Single-tile plant (G key / button)
         if self._plant_requested and not self._planting_mode:
             self._plant_requested = False
-            self._plant_queue = self._pick_plant_tiles(grid, agents)
+            self._try_plant_current_tile(grid)
+            return
 
-            if self._plant_queue:
-                self._planting_mode = True
-                self.state = "planting"
-                self.target = None
-                self.path = []
-                self.path_idx = 0
-                self.moving = False
-                self.replan_cd = 0
-            else:
-                self._try_plant_current_tile(grid)
-                return
-
-        # Planting mode takes priority over harvesting
+        # Autonomous planting takes priority over harvesting
         if self._planting_mode:
-            self._update_planting(grid, agents)
+            self._update_planting(grid, agents, season_mgr)
             return
 
         # ── Harvest mode ──────────────────────────────────────────────────
         if not self.moving or self.replan_cd == 0:
-            new_target = self._pick_harvest_target(grid, agents)
-
+            new_target = self._pick_harvest_target(grid, agents, season_mgr)
             if new_target and new_target != self.target:
                 self.target = new_target
-                path, explored = self._find_path_with_animal_avoidance(grid, agents, self.target)
+                rain_active = season_mgr.rain_active if season_mgr else False
+                path, explored = self._find_path_with_animal_avoidance(grid, agents, self.target, rain_active=rain_active)
                 if path:
                     self.set_path(path, explored)
                     self.replan_cd = 90
                     self.state = "moving"
                 else:
+                    self._show_failed_plant(self.target)
+                    self.target = None
                     self.state = "no_path"
-
             elif not new_target:
                 self.moving = False
-                self.state = "idle"
+                self.state  = "idle"
             else:
                 self.state = "moving"
 
@@ -494,69 +569,37 @@ class Farmer(Agent):
             self.animation.current_frame = 0
             self.animation.animation_timer = 0
 
+    # ── Draw ──────────────────────────────────────────────────────────────────
+
     def draw(self, surface, font=None):
-        """Draw farmer and show red cross on failed plant attempt."""
-        super().draw(surface, font)
-    
-    def draw_failed_plant_indicator(self, surface):
-        """Draw red cross on tile where planting failed (separate from farmer sprite)."""
-        if self._failed_plant_timer > 0 and self._failed_plant_tile is not None:
-            from utils.helpers import grid_to_px, tile_center
+        Agent.draw(self, surface, font)
 
-            col, row = self._failed_plant_tile
-            px, py = tile_center(col, row)
-            tile_x, tile_y = grid_to_px(col, row)
+    def draw_failed_plant_indicator(self, surface, grid=None):
+        """Draw red cross on tile where planting failed."""
+        import pygame
+        if self._failed_plant_timer <= 0 or self._failed_plant_tile is None:
+            return
 
-            # Use a cross sized to the tile box, with a clear red border
-            box_size = TILE_SIZE - 16
-            box_rect = pygame.Rect(
-                px - box_size // 2,
-                py - box_size // 2,
-                box_size,
-                box_size,
-            )
+        from utils.helpers import tile_center
+        col, row = self._failed_plant_tile
+        px, py   = tile_center(col, row)
+        box_size = TILE_SIZE - 16
+        box_rect = pygame.Rect(px - box_size//2, py - box_size//2, box_size, box_size)
 
-            # Dark translucent background for contrast
-            bg = pygame.Surface((box_rect.width + 8, box_rect.height + 8), pygame.SRCALPHA)
-            pygame.draw.rect(
-                bg,
-                (0, 0, 0, 180),
-                pygame.Rect(0, 0, bg.get_width(), bg.get_height()),
-                border_radius=8,
-            )
-            surface.blit(bg, (box_rect.x - 4, box_rect.y - 4))
+        bg = pygame.Surface((box_rect.width+8, box_rect.height+8), pygame.SRCALPHA)
+        pygame.draw.rect(bg, (0,0,0,180),
+                         pygame.Rect(0,0,bg.get_width(),bg.get_height()), border_radius=8)
+        surface.blit(bg, (box_rect.x-4, box_rect.y-4))
 
-            # Red outline and cross lines
-            border_color = (220, 40, 40)
-            pygame.draw.rect(surface, border_color, box_rect, width=3, border_radius=8)
-            pygame.draw.line(
-                surface,
-                border_color,
-                (box_rect.left + 6, box_rect.top + 6),
-                (box_rect.right - 6, box_rect.bottom - 6),
-                4,
-            )
-            pygame.draw.line(
-                surface,
-                border_color,
-                (box_rect.right - 6, box_rect.top + 6),
-                (box_rect.left + 6, box_rect.bottom - 6),
-                4,
-            )
+        bc = (220, 40, 40)
+        pygame.draw.rect(surface, bc, box_rect, width=3, border_radius=8)
+        pygame.draw.line(surface, bc, (box_rect.left+6,  box_rect.top+6),
+                                       (box_rect.right-6, box_rect.bottom-6), 4)
+        pygame.draw.line(surface, bc, (box_rect.right-6, box_rect.top+6),
+                                       (box_rect.left+6,  box_rect.bottom-6), 4)
 
-            # White inner highlight for crispness
-            highlight_color = (255, 220, 220)
-            pygame.draw.line(
-                surface,
-                highlight_color,
-                (box_rect.left + 8, box_rect.top + 6),
-                (box_rect.right - 6, box_rect.bottom - 8),
-                2,
-            )
-            pygame.draw.line(
-                surface,
-                highlight_color,
-                (box_rect.right - 6, box_rect.top + 6),
-                (box_rect.left + 8, box_rect.bottom - 8),
-                2,
-            )
+        hc = (255, 220, 220)
+        pygame.draw.line(surface, hc, (box_rect.left+8,  box_rect.top+6),
+                                       (box_rect.right-6, box_rect.bottom-8), 2)
+        pygame.draw.line(surface, hc, (box_rect.right-6, box_rect.top+6),
+                                       (box_rect.left+8,  box_rect.bottom-8), 2)

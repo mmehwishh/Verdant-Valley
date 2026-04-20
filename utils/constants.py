@@ -1,13 +1,17 @@
+
 import pygame
 
-# Window & Grid
-WINDOW_TITLE = "Verdant Valley"
-SCREEN_W, SCREEN_H = 1280, 800
+# ...existing code...
+
+
 FPS = 60
 TILE_SIZE = 48
 GRID_COLS, GRID_ROWS = 18, 14
 SIDEBAR_W = 320
 GRID_OFFSET_X, GRID_OFFSET_Y = 0, 80
+
+SCREEN_W = GRID_COLS * TILE_SIZE + SIDEBAR_W
+SCREEN_H = GRID_ROWS * TILE_SIZE + GRID_OFFSET_Y
 
 # Enhanced Color Palette
 C_BG_DARK = (18, 26, 18)
@@ -44,8 +48,10 @@ C_PATH_GUARD = (255, 100, 80)
 C_PATH_ANIMAL = (255, 200, 100)
 C_EXPLORED = (255, 255, 100, 60)
 
-# Tile Types & Costs
 TILE_GRASS, TILE_DIRT, TILE_STONE, TILE_MUD, TILE_WATER, TILE_FIELD = 0, 1, 2, 3, 4, 5
+TILE_SNOW_STONE = 6   # stone covered in snow (winter)
+TILE_WINTER_SNOW = 7  # farm tile covered in snow (winter)
+TILE_DARK_MUD = 8     # dark brown mud (post-flood)
 TILE_COST = {
     TILE_GRASS: 1.0,
     TILE_DIRT: 1.0,
@@ -53,6 +59,9 @@ TILE_COST = {
     TILE_MUD: 3.0,
     TILE_WATER: 999,
     TILE_FIELD: 1.0,
+TILE_SNOW_STONE: 1.2,
+    TILE_WINTER_SNOW: 2.5,
+    TILE_DARK_MUD: 4.0,
 }
 
 # Agent Movement Costs
@@ -60,27 +69,36 @@ FARMER_COSTS = {
     TILE_GRASS: 1.0,
     TILE_DIRT: 1.0,
     TILE_FIELD: 1.0,
-    TILE_MUD: 3.0,
+    TILE_MUD: float('inf'),
     TILE_WATER: float('inf'),
     TILE_STONE: float('inf'),
+    TILE_SNOW_STONE: float('inf'),
+    TILE_WINTER_SNOW: float('inf'),
+    TILE_DARK_MUD: float('inf'),  # Dark mud is impassable for Farmer (treated like blocked terrain)
 }
 
 GUARD_COSTS = {
     TILE_GRASS: 1.0,
     TILE_DIRT: 1.0,
     TILE_FIELD: 1.0,
-    TILE_MUD: 3.0,
+    TILE_MUD: float('inf'),
     TILE_WATER: float('inf'),
     TILE_STONE: float('inf'),
+    TILE_SNOW_STONE: float('inf'),
+    TILE_WINTER_SNOW: float('inf'),
+    TILE_DARK_MUD: float('inf'),  # Dark mud is impassable for Guard (treated like blocked terrain)
 }
 
 ANIMAL_COSTS = {
     TILE_GRASS: 1.0,
     TILE_DIRT: 1.0,
     TILE_FIELD: 1.0,
-    TILE_MUD: 2.0,
-    TILE_WATER: float('inf'),
-    TILE_STONE: float('inf'),
+    TILE_MUD: 1.0,
+    TILE_WATER: 1.0,
+    TILE_STONE: 1.0,
+    TILE_SNOW_STONE: 1.0,
+    TILE_WINTER_SNOW: 1.0,
+    TILE_DARK_MUD: 1.0,
 }
 
 # ── Tile Base Colors (richer, more saturated) ────────────────────────────────
@@ -91,6 +109,9 @@ TILE_COLOR = {
     TILE_MUD:   (80, 50, 22),    # dark wet mud
     TILE_WATER: (20, 80, 160),   # rich deep blue
     TILE_FIELD: (118, 66, 22),   # tilled dark sienna
+    TILE_SNOW_STONE: (180, 200, 220),  # snowy stone
+    TILE_WINTER_SNOW: (220, 235, 248), # winter snow
+    TILE_DARK_MUD: (60, 35, 15),    # post-flood dark mud
 }
 
 # ── Tile Highlight (top-face lighter shade) ───────────────────────────────────
@@ -101,6 +122,9 @@ TILE_HIGHLIGHT = {
     TILE_MUD:   (108, 72, 38),
     TILE_WATER: (40, 120, 210),
     TILE_FIELD: (158, 96, 44),
+    TILE_SNOW_STONE: (210, 225, 240),
+    TILE_WINTER_SNOW: (240, 248, 255),
+    TILE_DARK_MUD: (90, 55, 28),    # darker mud highlight
 }
 
 # ── Tile Shadow (bottom-face darker shade) ───────────────────────────────────
@@ -111,6 +135,9 @@ TILE_SHADOW = {
     TILE_MUD:   (50, 28, 8),
     TILE_WATER: (8, 40, 110),
     TILE_FIELD: (78, 36, 8),
+    TILE_SNOW_STONE: (140, 155, 175),
+    TILE_WINTER_SNOW: (180, 200, 220),
+    TILE_DARK_MUD: (40, 20, 8),     # darkest mud shadow
 }
 
 # ── Tile corner radius ────────────────────────────────────────────────────────
@@ -161,7 +188,7 @@ STATE_PAUSED, STATE_GA_VIZ, STATE_GAMEOVER = "paused", "ga_viz", "gameover"
 
 # Seasons
 SEASONS = ["🌱 Spring", "☀️ Summer", "🍂 Autumn", "❄️ Winter"]
-SEASON_DURATION = 30 * FPS
+SEASON_DURATION = 15 * FPS
 
 # Font Sizes
 FONT_HUGE, FONT_TITLE, FONT_LARGE, FONT_MEDIUM, FONT_SMALL, FONT_TINY = (

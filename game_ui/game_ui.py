@@ -1,3 +1,16 @@
+# ── Blocked Tile Cross Overlay ─────────────────────────────────────────────
+
+def draw_blocked_tile_cross(surface, col, row, grid, color=(220, 40, 40), size=32, thickness=4):
+    """Draw a red cross on the specified tile (blocked movement indicator)."""
+    import pygame
+    x, y = grid_to_px(col, row)
+    cx = x + grid.tiles[col][row].rect().width // 2
+    cy = y + grid.tiles[col][row].rect().height // 2
+    half = size // 2
+    pygame.draw.line(surface, color, (cx - half, cy - half), (cx + half, cy + half), thickness)
+    pygame.draw.line(surface, color, (cx - half, cy + half), (cx + half, cy - half), thickness)
+
+# Usage: Call draw_blocked_tile_cross in your main game loop or agent logic when movement is denied.
 """
 game_ui.py — all Pygame rendering: loading, menu, HUD, sidebar, CSP panel.
 """
@@ -5,6 +18,7 @@ game_ui.py — all Pygame rendering: loading, menu, HUD, sidebar, CSP panel.
 import pygame
 import math
 import random
+from utils.helpers import grid_to_px
 from utils.constants import *
 from utils.helpers import draw_rounded_rect, draw_text, lerp_color
 
