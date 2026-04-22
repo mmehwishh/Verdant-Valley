@@ -1,7 +1,3 @@
-"""
-utils/animation.py - Sprite sheet animation handler
-"""
-
 import pygame
 
 
@@ -34,7 +30,6 @@ class Animation:
                     frame.blit(self.sheet, (0, 0), (x, y, frame_width, frame_height))
 
                     if scale != 1:
-                        # FIX: cast to int — pygame.transform.scale requires integer dims
                         new_size = (int(frame_width * scale), int(frame_height * scale))
                         frame = pygame.transform.scale(frame, new_size)
 
