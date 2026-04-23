@@ -55,6 +55,7 @@ from game_ui.rain_animation import RainAnimation
 from game_ui.visualization_manager import VisualizationManager
 from game_ui.ga_popup import GAPopup
 from game_ui.year_end_screen import YearEndScreen
+from src.world.environment.clock import GameClock
 
 
 # ============================================================================
