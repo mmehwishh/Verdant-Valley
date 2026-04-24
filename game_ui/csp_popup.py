@@ -33,12 +33,15 @@ class CSPPopup:
         # Buttons
         btn_width = 170
         btn_height = 46
-        btn_x = self.x + self.width - btn_width - 22
+        btn_y = self.y + self.height - 62
+        btn_gap = 10
+        total_btn_w = btn_width * 2 + btn_gap
+        btn_start_x = self.x + self.width - total_btn_w - 22
         self.regenerate_button = pygame.Rect(
-            btn_x, self.y + self.height - 118, btn_width, btn_height
+            btn_start_x, btn_y, btn_width, btn_height
         )
         self.confirm_button = pygame.Rect(
-            btn_x, self.y + self.height - 62, btn_width, btn_height
+            btn_start_x + btn_width + btn_gap, btn_y, btn_width, btn_height
         )
 
         # Fonts
@@ -510,9 +513,20 @@ class CSPPopup:
 
         # Error message
         if self.message:
-            msg_surf = self.font_legend.render(self.message, True, (255, 160, 120))
-            self.screen.blit(msg_surf, (inner_x, cy))
-            cy += 18
+            words = self.message.split()
+            line, lines = "", []
+            for word in words:
+                test = (line + " " + word).strip()
+                if self.font_legend.size(test)[0] <= inner_w:
+                    line = test
+                else:
+                    if line: lines.append(line)
+                    line = word
+            if line: lines.append(line)
+            for l in lines:
+                self.screen.blit(self.font_legend.render(l, True, (255, 160, 120)), (inner_x, cy))
+                cy += 16
+            cy += 2
 
         # Crops placed section
         cy += 2

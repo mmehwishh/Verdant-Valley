@@ -9,7 +9,8 @@ Orchestrates all game systems including:
 - UI components (menus, buttons, popups)
 - Visualization manager for algorithms
 """
-
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, module='pygame')
 import sys
 import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
